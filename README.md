@@ -273,7 +273,8 @@ on my own Kindle. I'm sceptical of AI-made software, so here's what that means i
 - Claims about how the Kindle, Linux kernel, KOReader, uMTP-Responder and Calibre behave were
   checked against their source code, not assumed.
 - A separate AI review went through the code looking for bugs. It was given only the code and a
-  short description, not the development conversation or its conclusions. It found two serious ones, both since fixed:
+  short description, not the development conversation or its conclusions. It found two serious
+  bugs, both since fixed:
   - a kernel use-after-free in the stop order;
   - USB buffers too small for long filenames.
 - The [test suite](#tests) runs the real scripts and plugin code against a simulated Kindle. It
@@ -288,9 +289,8 @@ on my own Kindle. I'm sceptical of AI-made software, so here's what that means i
   is the kind of software where you should read the code, or at least the
   [How it works](#how-it-works) section, before trusting it.
 
-This is a personal project, shared as-is in case it helps someone with the same Kindle. If
-you're the only other person who ever installs it, that's fine with me. Bug reports and fixes
-are welcome.
+This is a personal project, shared as-is in case it helps someone with the same Kindle. If I
+end up being its only user, that's fine with me. Bug reports and fixes are welcome.
 
 ## License
 
