@@ -1,0 +1,50 @@
+--- a/src/msgqueue.c	2026-11-01 10:12:21.934143697 -0500
++++ b/src/msgqueue.c	2026-11-01 11:42:38.395278552 -0500
+@@ -40,6 +40,7 @@
+ #include <limits.h>
+ #include <stdio.h>
+ #include <errno.h>
++#include <time.h>
+ 
+ #include "mtp.h"
+ #include "mtp_cfg.h"
+@@ -65,6 +66,10 @@
+   0   // number of messages currently on the queue
+ };
+ 
++/* kindle-mtp patch: set by msgqueue_handler_deinit so the thread exits even when
++ * deinit happens without a shutdown signal (e.g. after "USB Init failed"). */
++static volatile sig_atomic_t msgqueue_stop = 0;
++
+ static void *msgqueue_gotsig(int sig, siginfo_t *info, void *ucontext)
+ {
+ 	return NULL;
+@@ -96,12 +101,17 @@
+ 
+ 	do
+ 	{
+-		ssize_t numreceived = mq_receive(ctx->msgqueue_id, message, MAX_MSG_SIZE + 1, NULL);
++		/* kindle-mtp patch: bounded wait, so a lost wake-up signal can't hang shutdown. */
++		struct timespec deadline;
++		clock_gettime(CLOCK_REALTIME, &deadline);
++		deadline.tv_sec += 1;
++		ssize_t numreceived = mq_timedreceive(ctx->msgqueue_id, message, MAX_MSG_SIZE + 1, NULL, &deadline);
+ 		if (numreceived < 0)
+ 		{
+-			if (shutdown_requested)
++			if (shutdown_requested || msgqueue_stop)
+ 				break;
+-			PRINT_ERROR("error receiving: %s", strerror(errno));
++			if (errno != ETIMEDOUT && errno != EINTR)
++				PRINT_ERROR("error receiving: %s", strerror(errno));
+ 			continue;
+ 		}
+ 		else if (numreceived <= MAX_MSG_SIZE)
+@@ -325,6 +335,7 @@
+ 	{
+ 		if( ctx->msgqueue_id != -1 )
+ 		{
++			msgqueue_stop = 1;
+ 			pthread_kill( ctx->msgqueue_thread, SIGUSR1);
+ 			pthread_join( ctx->msgqueue_thread, &ret);
+ 			mq_close(ctx->msgqueue_id);

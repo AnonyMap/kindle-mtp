@@ -1,0 +1,13 @@
+bin/umtprd was built from uMTP-Responder git commit 85a26f4 (v1.10.1),
+https://github.com/viveris/uMTP-Responder - full source in this folder.
+
+Build (Ubuntu 24.04, gcc-arm-linux-gnueabi 13.2):
+  make CC=arm-linux-gnueabi-gcc \
+       CFLAGS="-I./inc -Wall -O2 -march=armv7-a -mtune=cortex-a9" \
+       LDFLAGS="-static -s -lpthread -lrt"
+
+Statically linked so it doesn't depend on the Kindle's system libraries.
+
+Patched with kindle-mtp-msgqueue-shutdown.patch (apply with: patch -p1 < it)
+before building: fixes a hang on exit when USB init fails (the message-queue
+thread ignored its wake-up and blocked forever in mq_receive).
