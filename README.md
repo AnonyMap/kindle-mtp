@@ -54,11 +54,21 @@ Calibre sends **EPUB** by default (not the Kindle formats it would pick for a st
 it puts books in the Kindle's `documents` folder.
 
 1. On the Kindle, start USB file transfer and plug in.
-2. Make sure your file manager isn't holding the device. Only one program can use an MTP device
-   at a time.
-   - **KDE (Bazzite default):** don't open it in Dolphin first. If Calibre says it can't open the
-     device, run `killall kiod6`.
-   - **GNOME:** eject it in Files.
+2. Make sure your desktop isn't holding the device. Only one program can use an MTP device at a
+   time.
+   - KDE's `kiod6` claims the device in the background as soon as it's plugged in or browsed once,
+     even with no Dolphin window open.
+   - When that happens, Calibre fails to open it **silently** and won't retry until you replug.
+   
+   Two fixes:
+   - **One-off:** quit Calibre, run `killall kiod6` (GNOME: eject it in Files), start Calibre,
+     then replug the Kindle.
+   - **Permanent:** install [`tools/69-zz-kindle-mtp-calibre.rules`](tools/69-zz-kindle-mtp-calibre.rules).
+     It hides this device from the desktop's device handling so Calibre always gets it; the file
+     manager stops showing it. Instructions are inside the file.
+   
+   To see who holds the device, run [`tools/host-check.sh`](tools/host-check.sh): look for
+   `driver=usbfs`, then the process list.
 3. Calibre asks **"Manage the Kindle (MTP)?"**. Choose **Yes**.
 4. Recommended, once: right-click Calibre's device icon → **Configure this device**.
    - Under **Ignored folders**, untick `koreader`. KOReader's own files are thousands of small
@@ -125,6 +135,10 @@ sh /mnt/us/koreader/plugins/usbmtp.koplugin/mtp/mtp-stop.sh
 ```
 
 ## Troubleshooting
+
+- **Which version is on the Kindle?** Menu → USB file transfer (MTP) → **About (vX.Y)**, or
+  `usbmtp.koplugin/mtp/VERSION`. When installing from GitHub, make sure the `usbmtp.koplugin`
+  folder you copy replaces the old one in `koreader/plugins/`.
 
 - Run **Status / diagnostics** from the plugin menu.
 - Logs are in `koreader/plugins/usbmtp.koplugin/mtp/`: `mtp.log` (the scripts) and

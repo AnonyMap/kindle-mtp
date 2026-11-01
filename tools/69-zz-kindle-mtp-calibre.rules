@@ -1,0 +1,17 @@
+# Optional, for Linux desktops whose file manager grabs MTP devices (KDE's kiod6,
+# GNOME's gvfs), which blocks Calibre: only one program can use an MTP device.
+#
+# Hides the KOReader MTP Kindle from the desktop's device handling (Solid/gvfs
+# key off these udev properties), keeps your user's access to the device, and
+# leaves Calibre working (it checks the USB device directly, not these properties).
+# Matches only devices whose manufacturer string is "KOReader".
+# Trade-off: your file manager won't show the Kindle while this is installed.
+#
+# Install:  sudo cp 69-zz-kindle-mtp-calibre.rules /etc/udev/rules.d/
+#           sudo udevadm control --reload      (then replug the Kindle)
+# Remove:   sudo rm /etc/udev/rules.d/69-zz-kindle-mtp-calibre.rules
+#           sudo udevadm control --reload
+#
+# Sorts after 69-libmtp.rules (which sets the properties) and before
+# 70-uaccess.rules (which grants seat access).
+ACTION=="add|change", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="1d6b", ATTR{idProduct}=="0100", ATTR{manufacturer}=="KOReader", ENV{ID_MTP_DEVICE}="", ENV{ID_MEDIA_PLAYER}="", ENV{ID_GPHOTO2}="", TAG+="uaccess"

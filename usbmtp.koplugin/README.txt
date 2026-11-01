@@ -1,4 +1,4 @@
-USB file transfer (MTP) for KOReader on Kindle - v0.3 (device test build)
+USB file transfer (MTP) for KOReader on Kindle - (version: see mtp/VERSION or Menu > About)
 =========================================================================
 Lets your computer copy books over USB while KOReader stays open,
 from the file browser (any view, including mosaic/bookshelf) or inside a book.

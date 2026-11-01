@@ -5,6 +5,8 @@
 # shellcheck source=lib/common.sh
 . "$(dirname "$0")/lib/common.sh"
 
+echo "version:       $(cat "${KMTP_SRC}/VERSION" 2>/dev/null)"
+echo "USB serial:    $(sed -n 's/^serial "\(.*\)"/\1/p' "${KMTP_RUN}/umtprd.conf" 2>/dev/null)"
 echo "volumd:        $(volumd_state)"
 echo "USB state:     $(udc_state)"
 _p="$(daemon_pid)"

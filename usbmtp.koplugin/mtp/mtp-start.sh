@@ -12,7 +12,7 @@
 . "$(dirname "$0")/lib/common.sh"
 
 : >"${KMTP_LOG}" 2>/dev/null
-log "=== kindle-mtp start ($(date)) ==="
+log "=== kindle-mtp start ($(date)) version $(cat "${KMTP_SRC}/VERSION" 2>/dev/null) ==="
 log "kernel $(uname -r), volumd: $(volumd_state), USB: $(udc_state)"
 
 # ---------- preflight (nothing has been changed yet) ----------
@@ -54,7 +54,10 @@ cp -f "${KMTP_SRC}/conf/umtprd.conf" "${KMTP_RUN}/umtprd.conf" || die "cannot co
 # hosts can tell devices apart and remember per-device settings.
 SERIAL="$(tr -dc 'A-Za-z0-9' </proc/usid 2>/dev/null | cut -c1-16)"
 [ -n "${SERIAL}" ] || SERIAL="KMTP0001"
-sed "s/^serial .*/serial \"${SERIAL}\"/" "${KMTP_RUN}/umtprd.conf" >"${KMTP_RUN}/umtprd.conf.tmp" &&
+VERSION="$(cat "${KMTP_SRC}/VERSION" 2>/dev/null)"
+sed -e "s/^serial .*/serial \"${SERIAL}\"/" \
+    -e "s/^firmware_version .*/firmware_version \"usbmtp ${VERSION:-unknown}\"/" \
+    "${KMTP_RUN}/umtprd.conf" >"${KMTP_RUN}/umtprd.conf.tmp" &&
     mv -f "${KMTP_RUN}/umtprd.conf.tmp" "${KMTP_RUN}/umtprd.conf" || die "cannot write config"
 chmod 755 "${KMTP_RUN}/umtprd"
 state_set STARTED "$(date +%s)"
