@@ -9,7 +9,7 @@ daemon for as long as KOReader runs, because stock USB mass storage would unmoun
 KOReader itself lives on (`/mnt/us`). MTP avoids that: files are copied through the mounted
 filesystem, so nothing gets unmounted.
 
-> **Status: v0.4, early but working.** Confirmed on a Kindle 10th gen (FW 5.16.8) with Bazzite
+> **Status: v0.5, early but working.** Confirmed on a Kindle 10th gen (FW 5.16.8) with Bazzite
 > Linux (KDE): copying books from the file manager, and sending books from Calibre (Flatpak
 > 9.17). Everything else is covered by the simulated-Kindle test suite (see [Tests](#tests)) but
 > not yet confirmed on hardware; see [Not yet tested on hardware](#not-yet-tested-on-hardware).
@@ -80,6 +80,26 @@ On the computer:
 - **Windows:** should work in Explorer (untested).
 
 Don't edit the `koreader` folder from the computer while sharing.
+
+## Updating
+
+From v0.5 on, the plugin updates itself from this repo's
+[GitHub Releases](https://github.com/AnonyMap/usbmtp/releases) over Wi-Fi:
+**Tools → USB file transfer (MTP) → Check for updates**.
+
+It shows the release notes and asks before installing. KOReader then needs a restart. It only
+checks when you tap that menu entry, never automatically.
+
+Before installing, it refuses anything that:
+- isn't the latest published release;
+- fails its `SHA256SUMS` checksum;
+- contains files outside `usbmtp.koplugin/`;
+- has a version inside the zip that doesn't match the release tag.
+
+The new copy is unpacked next to the old one and swapped in with two renames. If that fails,
+the old copy is put back. It won't update while a transfer is running.
+
+v0.4 and earlier have no updater, so install v0.5 by hand once (see [Install](#install)).
 
 ## Using with Calibre
 
@@ -212,6 +232,7 @@ These pass in the simulated-Kindle suite but haven't been confirmed on a real de
 - the "ask to start when plugged in" prompt, and wall chargers correctly not triggering it;
 - Hide and keep reading during a transfer;
 - stock USB working normally after exiting KOReader;
+- **Check for updates** against the real GitHub (new in v0.5; tested against fake releases);
 - Windows and macOS hosts.
 
 Reports are welcome.
@@ -223,6 +244,9 @@ Reports are welcome.
 | `usbmtp.koplugin/` | The plugin. This is the only folder that goes on the Kindle |
 | `usbmtp.koplugin/mtp/` | Start, stop, status and watcher scripts, umtprd and its config, version file |
 | `usbmtp.koplugin/mtp/umtprd-source/` | uMTP-Responder source, license (GPLv3) and our patch |
+| `usbmtp.koplugin/usbmtp_updater.lua` | The self-updater (GitHub Releases) |
+| `tools/make-release.sh` | Builds the release zip and `SHA256SUMS` into `dist/` |
+| `.github/workflows/release.yml` | Publishes a release when a `v*` tag is pushed |
 | `tools/build-umtprd.sh` | Reproducible rebuild of the umtprd binary |
 | `tools/host-check.sh` | Linux host diagnostics |
 | `tools/69-zz-usbmtp-calibre.rules` | Optional udev rule so KDE/GNOME don't block Calibre |
@@ -237,6 +261,21 @@ exit after a failed USB init. Builds are reproducible:
 ```sh
 sh tools/build-umtprd.sh   # needs gcc-arm-linux-gnueabi; see the script for Bazzite/Fedora
 ```
+
+## Releasing
+
+1. Bump `usbmtp.koplugin/mtp/VERSION`, run the tests, and merge to `main`.
+2. Tag and push:
+   ```sh
+   git tag v0.5 && git push origin v0.5
+   ```
+3. The **Release** workflow:
+   - checks that the tag matches `VERSION`;
+   - builds `usbmtp.koplugin-v<VERSION>.zip` and `SHA256SUMS` with `tools/make-release.sh`
+     (reproducible: same code, same zip);
+   - publishes the GitHub Release.
+   
+   The plugin's **Check for updates** then offers it.
 
 ## Tests
 
@@ -257,10 +296,23 @@ If BusyBox is installed, the scripts run under BusyBox ash, as on the device. Th
 - the plugin's behaviour in books, on unplug, sleep, exit and charger vs. computer;
 - the crash watcher;
 - the serial number and version stamping;
-- the Linux 4.1 FunctionFS teardown order (the fake flags the use-after-free ordering).
+- the Linux 4.1 FunctionFS teardown order (the fake flags the use-after-free ordering);
+- the update flow in the plugin;
+- the updater itself, using KOReader's real unzip and checksum code against fake GitHub
+  releases:
+  - a good update;
+  - an up-to-date check;
+  - a corrupted download;
+  - files outside the plugin folder;
+  - a version mismatch;
+  - missing files;
+  - no release yet, and being offline;
+  - a swap that fails halfway and has to roll back.
 
 ```sh
 sudo sh tests/run.sh
+# include the updater tests (needs a koreader-base checkout, zip, lua-dkjson, lua-filesystem, libarchive13):
+sudo KOREADER_BASE=/path/to/koreader-base sh tests/run.sh
 ```
 
 ## How this was made
@@ -284,6 +336,8 @@ on my own Kindle. I'm sceptical of AI-made software, so here's what that means i
 - It has been used on one Kindle, by one person. Many things are still
   [untested on real hardware](#not-yet-tested-on-hardware).
 - I can't promise I'll understand and fix every bug myself.
+- It can download and install new versions of itself from this repo's GitHub Releases, but only
+  when you tap **Check for updates** and confirm.
 - It runs as root and swaps the Kindle's USB kernel modules while KOReader is running. A reboot
   always restores stock USB, and nothing is written to the Kindle's system partitions. Still, it
   is the kind of software where you should read the code, or at least the

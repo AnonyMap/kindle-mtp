@@ -81,7 +81,8 @@ echo "== shell scripts (BusyBox: ${BB})"
 fresh_plugin; o="$(ns : sh "${H}/scenarios/scripts-cycle.sh")"
 expect "start/stop cycle (configfs)" "$o" "MTP is ON (mode: configfs" "MTP is OFF. Safe to unplug." "^g_mass_storage 1000" "MTP is not active. Nothing to do."
 expect_not "teardown order safe for Linux 4.1 FunctionFS" "$o" "ORDER-VIOLATION"
-expect "version stamped and shown" "$o" 'version in umtprd.conf: firmware_version "usbmtp 0.4"' "^version: *0.4" "USB serial: *G000AB12CD34EF56"
+V="$(tr -d ' \n' < "${REPO}/usbmtp.koplugin/mtp/VERSION")"
+expect "version stamped and shown" "$o" "version in umtprd.conf: firmware_version \"usbmtp ${V}\"" "^version: *${V}" "USB serial: *G000AB12CD34EF56"
 expect "reports the Kindle's own serial" "$o" 'serial in umtprd.conf: serial "G000AB12CD34EF56"' "serial in gadget: G000AB12CD34EF56"
 fresh_plugin; o="$(ns : sh "${H}/scenarios/scripts-watcher.sh")"
 expect "crash watcher stops MTP when KOReader dies" "$o" "MTP is ON" "watcher: process" "state: gone" "modules:.*g_mass_storage"
@@ -114,6 +115,18 @@ fresh_plugin; o="$(ns : luajit "${H}/plugin_test.lua")"
 printf '%s\n' "$o" | grep -E "^FAIL" | sed 's/^/    /'
 expect "plugin scenarios" "$o" " 0 failed"
 printf '%s\n' "$o" | grep -E "passed, [0-9]+ failed" | sed 's/^/    /'
+
+echo "== updater (real KOReader archiver + sha2, fake GitHub)"
+KBASE="${KOREADER_BASE:-}"
+if [ -n "${KBASE}" ] && [ -f "${KBASE}/ffi/archiver.lua" ] && command -v zip >/dev/null \
+   && [ -f /usr/share/lua/5.1/dkjson.lua ] && ls /usr/lib/*/libarchive.so.13 >/dev/null 2>&1; then
+    o="$(KOREADER_BASE="${KBASE}" luajit "${REPO}/tests/updater_test.lua" "${REPO}" 2>&1)"
+    printf '%s\n' "$o" | grep -E "^FAIL" | sed 's/^/    /'
+    expect "updater scenarios" "$o" " 0 failed"
+    printf '%s\n' "$o" | grep -E "passed, [0-9]+ failed" | sed 's/^/    /'
+else
+    echo "SKIP updater scenarios (set KOREADER_BASE to a koreader-base checkout; needs zip, lua-dkjson, lua-filesystem, libarchive13)"
+fi
 
 echo
 echo "${PASS} passed, ${FAIL} failed"

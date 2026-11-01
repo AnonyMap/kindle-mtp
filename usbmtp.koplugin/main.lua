@@ -28,9 +28,15 @@ local PluginShare = require("pluginshare")
 local TextViewer = require("ui/widget/textviewer")
 local UIManager = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
+local DataStorage = require("datastorage")
+local NetworkMgr = require("ui/network/manager")
+-- Must be required while the plugin loads: KOReader only puts the plugin folder on
+-- package.path during loading. Distinct name, since loaded modules are shared by all plugins.
+local Updater = require("usbmtp_updater")
 local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
 local _ = require("gettext")
+local T = require("ffi/util").template
 
 local ffi = require("ffi")
 require("ffi/posix_h")
@@ -517,6 +523,64 @@ function UsbMtp:onToggleUsbMtp()
     return true
 end
 
+---------------------------------------------------------------------------
+-- Updates from GitHub Releases
+---------------------------------------------------------------------------
+
+local function updateWorkDir()
+    return DataStorage:getDataDir() .. "/cache/usbmtp-update"
+end
+
+function UsbMtp:checkForUpdates()
+    if Ctl.active then
+        UIManager:show(InfoMessage:new{ text = _("Stop the USB file transfer first, then check for updates.") })
+        return
+    end
+    NetworkMgr:runWhenOnline(function()
+        local busy = showBusy(_("Checking GitHub for updates…"))
+        local info, err = Updater.check(Ctl.version, updateWorkDir())
+        UIManager:close(busy)
+        if not info then
+            UIManager:show(InfoMessage:new{ icon = "notice-warning", text = err })
+            return
+        end
+        if not info.newer then
+            UIManager:show(InfoMessage:new{
+                text = T(_("You have the latest version (v%1)."), Ctl.version), timeout = 4,
+            })
+            return
+        end
+        local notes = info.notes:gsub("\r", "")
+        if #notes > 700 then notes = notes:sub(1, 700) .. "…" end
+        UIManager:show(ConfirmBox:new{
+            text = T(_("Version %1 is available (you have %2)."), info.version, Ctl.version) ..
+                   (notes ~= "" and ("\n\n" .. notes) or "") ..
+                   "\n\n" .. _("Install it? KOReader will need to restart."),
+            ok_text = _("Install"),
+            ok_callback = function() self:installUpdate(info) end,
+        })
+    end)
+end
+
+function UsbMtp:installUpdate(info)
+    if Ctl.active then
+        UIManager:show(InfoMessage:new{ text = _("Stop the USB file transfer first.") })
+        return
+    end
+    local root = Ctl.mtp_dir:match("^(.*)/mtp$")
+    local busy = showBusy(T(_("Downloading and installing v%1…"), info.version))
+    local ok, err = Updater.install(info, root, updateWorkDir())
+    UIManager:close(busy)
+    if not ok then
+        UIManager:show(InfoMessage:new{
+            icon = "notice-warning",
+            text = _("Update failed. The installed version was not changed.") .. "\n\n" .. tostring(err),
+        })
+        return
+    end
+    UIManager:askForRestart(T(_("Updated to v%1. Restart KOReader now to use it?"), info.version))
+end
+
 function UsbMtp:showStatus()
     local p = io.popen(string.format("sh '%s/mtp-status.sh' 2>&1", Ctl.mtp_dir), "r")
     local out = p and p:read("*a") or ""
@@ -543,6 +607,14 @@ function UsbMtp:addToMainMenu(menu_items)
                 help_text = _("When the cable is connected to a computer (not a wall charger), offer to start USB file transfer. Works on any screen, including inside a book."),
                 checked_func = function() return G_reader_settings:isTrue("usbmtp_prompt_on_plug") end,
                 callback = function() G_reader_settings:flipNilOrFalse("usbmtp_prompt_on_plug") end,
+            },
+            {
+                text = _("Check for updates"),
+                help_text = _("Look for a newer release on GitHub over Wi-Fi, and install it if you want."),
+                callback = function(touchmenu_instance)
+                    if touchmenu_instance then touchmenu_instance:closeMenu() end
+                    self:checkForUpdates()
+                end,
             },
             {
                 text = _("Status / diagnostics"),
