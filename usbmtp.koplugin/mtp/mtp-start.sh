@@ -49,6 +49,13 @@ mkdir -p "${KMTP_RUN}" || die "cannot create ${KMTP_RUN}"
 : >"${KMTP_DLOG}"
 cp -f "${KMTP_SRC}/bin/umtprd" "${KMTP_RUN}/umtprd" || die "cannot copy umtprd"
 cp -f "${KMTP_SRC}/conf/umtprd.conf" "${KMTP_RUN}/umtprd.conf" || die "cannot copy config"
+
+# Report the Kindle's own serial (as the stock USB mode does), so Calibre and other
+# hosts can tell devices apart and remember per-device settings.
+SERIAL="$(tr -dc 'A-Za-z0-9' </proc/usid 2>/dev/null | cut -c1-16)"
+[ -n "${SERIAL}" ] || SERIAL="KMTP0001"
+sed "s/^serial .*/serial \"${SERIAL}\"/" "${KMTP_RUN}/umtprd.conf" >"${KMTP_RUN}/umtprd.conf.tmp" &&
+    mv -f "${KMTP_RUN}/umtprd.conf.tmp" "${KMTP_RUN}/umtprd.conf" || die "cannot write config"
 chmod 755 "${KMTP_RUN}/umtprd"
 state_set STARTED "$(date +%s)"
 
@@ -95,7 +102,7 @@ setup_configfs() {
     echo 0x0100 >"${GADGET}/idProduct"
     echo 0x0200 >"${GADGET}/bcdUSB"
     mkdir "${GADGET}/strings/0x409" || return 1
-    echo "KMTP0001" >"${GADGET}/strings/0x409/serialnumber"
+    echo "${SERIAL}" >"${GADGET}/strings/0x409/serialnumber"
     echo "KOReader" >"${GADGET}/strings/0x409/manufacturer"
     echo "Kindle (MTP)" >"${GADGET}/strings/0x409/product"
     mkdir "${GADGET}/functions/ffs.mtp" || return 1
@@ -115,7 +122,7 @@ setup_gffs() {
         load_mod usb_f_fs function/usb_f_fs.ko || return 1
         state_set LOADED_USB_F_FS yes
     fi
-    load_mod g_ffs legacy/g_ffs.ko functions=mtp idVendor=0x1d6b idProduct=0x0100 iManufacturer=KOReader iProduct=Kindle-MTP iSerialNumber=KMTP0001 || return 1
+    load_mod g_ffs legacy/g_ffs.ko functions=mtp idVendor=0x1d6b idProduct=0x0100 iManufacturer=KOReader iProduct=Kindle-MTP iSerialNumber="${SERIAL}" || return 1
     mkdir -p "${FFS_MNT}"
     mount -t functionfs mtp "${FFS_MNT}" || return 1
     return 0
