@@ -1,0 +1,11 @@
+#!/bin/sh
+/tmp/kmtp-test/harness/realbin/mkdir "$@" || exit $?
+for a in "$@"; do
+  case "$a" in
+    /sys/kernel/config/usb_gadget/*/configs/*/*) ;;
+    /sys/kernel/config/usb_gadget/*/configs/*) /tmp/kmtp-test/harness/realbin/mkdir -p "$a/strings"; : >"$a/MaxPower" ;;
+    /sys/kernel/config/usb_gadget/*/*) ;;
+    /sys/kernel/config/usb_gadget/*)
+      /tmp/kmtp-test/harness/realbin/mkdir -p "$a/strings" "$a/functions" "$a/configs"; : >"$a/UDC" ;;
+  esac
+done

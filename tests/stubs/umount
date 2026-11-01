@@ -1,0 +1,7 @@
+#!/bin/sh
+F=/tmp/kmtp-test/fake
+echo "umount $*" >>"$F/calls"
+grep -q " $1 " "$F/proc/mounts" || exit 1
+grep -v " $1 " "$F/proc/mounts" >"$F/m.tmp"; cat "$F/m.tmp" >"$F/proc/mounts"
+rm -f "$1"/ep*
+case "$1" in /sys/kernel/config) rm -rf /sys/kernel/config/usb_gadget ;; esac

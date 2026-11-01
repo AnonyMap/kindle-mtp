@@ -1,0 +1,10 @@
+#!/bin/sh
+F=/tmp/kmtp-test/fake
+echo "mount $*" >>"$F/calls"
+[ "$1" = "-t" ] || exit 1
+type="$2"; src="$3"; tgt="$4"
+[ -e "$F/fail_mount_$type" ] && exit 1
+case "$type" in
+  configfs) [ -e "$F/no_usb_gadget" ] || /tmp/kmtp-test/harness/realbin/mkdir -p "$tgt/usb_gadget" ;;
+esac
+echo "$src $tgt $type rw 0 0" >>"$F/proc/mounts"

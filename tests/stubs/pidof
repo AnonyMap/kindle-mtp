@@ -1,0 +1,3 @@
+#!/bin/sh
+[ "$1" = "volumd" ] && [ -e /tmp/kmtp-test/fake/volumd_pid ] && cat /tmp/kmtp-test/fake/volumd_pid
+exit 0

@@ -1,0 +1,16 @@
+#!/bin/sh
+F=/tmp/kmtp-test/fake
+me="$(basename "$0")"
+echo "$me $*" >>"$F/calls"
+case "$me" in
+  modprobe) exit 1 ;;
+  insmod)
+    name="$(basename "$1" .ko)"
+    [ -e "$F/fail_insmod_$name" ] && exit 1
+    grep -q "^$name " "$F/proc/modules" || echo "$name 1000 0 - Live 0x0" >>"$F/proc/modules"
+    ;;
+  rmmod)
+    grep -q "^$1 " "$F/proc/modules" || exit 1
+    sed -i "/^$1 /d" "$F/proc/modules" ;;
+esac
+exit 0

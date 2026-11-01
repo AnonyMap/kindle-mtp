@@ -1,0 +1,9 @@
+#!/bin/sh
+F=/tmp/kmtp-test/fake
+echo "[fake umtprd] args: $*"
+[ -e "$F/umtprd_fail" ] && { echo "[fake umtprd] USB Init failed !"; exit 1; }
+grep -q " /dev/ffs-mtp functionfs" "$F/proc/mounts" || { echo "[fake umtprd] ep0 not mounted"; exit 1; }
+trap 'echo "[fake umtprd] got TERM"; rm -f /dev/ffs-mtp/ep1 /dev/ffs-mtp/ep2 /dev/ffs-mtp/ep3; exit 0' TERM
+touch /dev/ffs-mtp/ep1 /dev/ffs-mtp/ep2 /dev/ffs-mtp/ep3
+echo "[fake umtprd] endpoints ready"
+while :; do sleep 1; done
