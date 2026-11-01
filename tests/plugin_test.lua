@@ -7,6 +7,7 @@ function UIManager:unschedule(f) for i=#tasks,1,-1 do if tasks[i]==f then table.
 function UIManager:show(w) shown[#shown+1]=w; note("show "..w.kind.." "..((w.text or w.title or ""):gsub("\n+"," | "):sub(1,140))) end
 function UIManager:close(w) for i=#shown,1,-1 do if shown[i]==w then table.remove(shown,i) end end end
 function UIManager:forceRePaint() end
+function UIManager:askForRestart(msg) UIManager.restart_msg = msg end
 function UIManager:flushSettings() local R = package.loaded["apps/reader/readerui"]; if R and R.instance then R.instance:saveSettings() end end
 function UIManager:getTopmostVisibleWidget() return shown[#shown] end
 local function runTasks(n) for _=1,(n or 1) do local t = tasks; tasks = {}; for _,f in ipairs(t) do f() end end end
@@ -26,6 +27,14 @@ package.preload["ui/widget/notification"] = function() return { SOURCE_ALWAYS_SH
 package.preload["ui/event"] = function() return { new=function(_, name) return { name=name } end } end
 package.preload["ffi/posix_h"] = function() require("ffi").cdef("int getpid(void);"); return true end
 package.preload["dispatcher"] = function() return { registerAction=function() end } end
+package.preload["datastorage"] = function() return { getDataDir=function() return "/tmp/kmtp-test/fake/koreader" end } end
+package.preload["ui/network/manager"] = function() return { runWhenOnline=function(_, cb) cb() end } end
+package.preload["ffi/util"] = function() return { template=function(fmt, ...) local a = {...}; return (fmt:gsub("%%(%d)", function(i) return tostring(a[tonumber(i)]) end)) end } end
+-- Stand-in updater: scripted results, records calls
+local FakeUpdater = { calls = {} }
+function FakeUpdater.check(cur) FakeUpdater.calls[#FakeUpdater.calls+1] = "check "..cur; return FakeUpdater.next_check, FakeUpdater.next_err end
+function FakeUpdater.install(info, root) FakeUpdater.calls[#FakeUpdater.calls+1] = "install "..info.version.." "..root; return FakeUpdater.next_install, FakeUpdater.next_install_err end
+package.preload["usbmtp_updater"] = function() return FakeUpdater end
 package.preload["pluginshare"] = function() return {} end
 package.preload["ui/uimanager"] = function() return UIManager end
 package.preload["logger"] = function() local n=function() end; return {info=n,warn=n,dbg=n,err=n} end
@@ -72,6 +81,9 @@ local pass, fail = 0, 0
 local function check(c, m) if c then pass=pass+1 else fail=fail+1 end; print((c and "PASS " or "FAIL ")..m) end
 local function startNow() menu_items.usbmtp.sub_item_table[1].callback(); fakeProcStat("S") end
 local Ctl = Plugin._controller
+local V = (io.open("/tmp/kmtp-test/plugin/usbmtp.koplugin/mtp/VERSION"):read("*l"):gsub("%s", ""))
+local NEXT = (function() local a, b = V:match("^(%d+)%.(%d+)"); return a .. "." .. (tonumber(b) + 1) end)()
+local function esc(x) return (x:gsub("%p", "%%%0")) end
 
 print("== A. start from inside a book")
 openBook(); udc("not attached")
@@ -84,8 +96,11 @@ check(modules():find("usb_f_fs") ~= nil, "MTP gadget up")
 
 local wp = io.open("/var/tmp/kmtp/watcher.pid"); check(wp ~= nil, "crash watcher started with KOReader's pid"); if wp then wp:close() end
 
-local about = menu_items.usbmtp.sub_item_table[5]
-check(about.text_func() == "About (v0.4)", "About shows the installed version")
+local about
+for _, it in ipairs(menu_items.usbmtp.sub_item_table) do
+  if it.text_func and it.text_func():find("^About") then about = it end
+end
+check(about and about.text_func() == "About (v" .. V .. ")", "About shows the installed version")
 
 print("== B. Hide, then computer connects")
 local d = top(); UIManager:close(d); d.ok_callback()
@@ -171,4 +186,36 @@ check(top().text:find("left running"), "state kept, so cleanup is offered again"
 os.remove("/tmp/kmtp-test/fake/fail_insmod_g_mass_storage")
 top().ok_callback()
 check(top().text:find("Safe to unplug") and modules():find("g_mass_storage"), "retry restored stock USB")
+print("== M. check for updates")
+local function menuItem(label)
+  for _, it in ipairs(menu_items.usbmtp.sub_item_table) do
+    local t = it.text or (it.text_func and it.text_func())
+    if t == label then return it end
+  end
+end
+local upd = menuItem("Check for updates")
+check(upd ~= nil, "menu has Check for updates")
+-- Scenarios J/L reloaded the plugin module; the menu now belongs to the newest copy.
+local CtlM = P3._controller
+startNow(); FakeUpdater.calls = {}
+upd.callback()
+check(#FakeUpdater.calls == 0 and top().text:find("Stop the USB file transfer first"), "refuses while a transfer is running")
+CtlM:stop()
+FakeUpdater.next_check = { newer = false, version = V }
+upd.callback()
+check(top().text:find("You have the latest version %(v" .. esc(V) .. "%)"), "says up to date")
+FakeUpdater.next_check, FakeUpdater.next_err = nil, "Could not reach GitHub: timeout"
+upd.callback()
+check(top().text:find("Could not reach GitHub"), "shows network errors")
+FakeUpdater.next_check = { newer = true, version = NEXT, notes = "Faster stop." }
+upd.callback()
+check(top().kind == "ConfirmBox" and top().text:find("Version " .. esc(NEXT) .. " is available %(you have " .. esc(V) .. "%)") and top().text:find("Faster stop."), "offers the update with notes")
+FakeUpdater.next_install = true
+top().ok_callback()
+check(FakeUpdater.calls[#FakeUpdater.calls]:find("^install " .. esc(NEXT) .. " .*/usbmtp.koplugin$"), "installs into the plugin folder")
+check(UIManager.restart_msg and UIManager.restart_msg:find("Updated to v" .. esc(NEXT)), "asks to restart KOReader")
+FakeUpdater.next_install, FakeUpdater.next_install_err = nil, "Checksum mismatch (download corrupted?). Nothing was changed."
+upd.callback(); top().ok_callback()
+check(top().text:find("Update failed. The installed version was not changed.") and top().text:find("Checksum mismatch"), "explains a failed install")
+
 print(string.format("\n%d passed, %d failed", pass, fail))

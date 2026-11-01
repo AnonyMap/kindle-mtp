@@ -32,6 +32,13 @@ INSTALL
   3. Eject, unplug, start KOReader from KUAL.
   4. Check: Tools > USB file transfer (MTP) > About shows the new version.
 
+UPDATING (v0.5 and later)
+  Tools > USB file transfer (MTP) > Check for updates (needs Wi-Fi).
+  It shows the release notes and asks first; then restart KOReader. It only
+  checks when you tap it. It refuses a download that fails its checksum, or
+  that contains anything outside this plugin's folder, and it keeps the
+  current version if anything goes wrong. Stop any transfer before updating.
+
 START IT (any of these)
   - Menu: Tools (wrench) > USB file transfer (MTP) > Start USB file transfer
   - Plug in: turn on "Ask to start when plugged into a computer" in that

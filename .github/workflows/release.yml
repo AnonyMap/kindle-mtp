@@ -1,0 +1,33 @@
+# Push a tag like v0.5 to publish a release. The tag must match usbmtp.koplugin/mtp/VERSION.
+# The release gets the plugin zip and SHA256SUMS, which the plugin's updater downloads.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check tag matches VERSION
+        run: |
+          v="$(tr -d ' \n' < usbmtp.koplugin/mtp/VERSION)"
+          if [ "v$v" != "${GITHUB_REF_NAME}" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match VERSION $v"; exit 1
+          fi
+
+      - name: Build assets
+        run: sh tools/make-release.sh
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/*.zip dist/SHA256SUMS \
+            --title "${GITHUB_REF_NAME}" --generate-notes --verify-tag
