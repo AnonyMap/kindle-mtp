@@ -81,6 +81,7 @@ echo "== shell scripts (BusyBox: ${BB})"
 fresh_plugin; o="$(ns : sh "${H}/scenarios/scripts-cycle.sh")"
 expect "start/stop cycle (configfs)" "$o" "MTP is ON (mode: configfs" "MTP is OFF. Safe to unplug." "^g_mass_storage 1000" "MTP is not active. Nothing to do."
 expect_not "teardown order safe for Linux 4.1 FunctionFS" "$o" "ORDER-VIOLATION"
+expect "reports the Kindle's own serial" "$o" 'serial in umtprd.conf: serial "G000AB12CD34EF56"' "serial in gadget: G000AB12CD34EF56"
 fresh_plugin; o="$(ns : sh "${H}/scenarios/scripts-watcher.sh")"
 expect "crash watcher stops MTP when KOReader dies" "$o" "MTP is ON" "watcher: process" "state: gone" "modules:.*g_mass_storage"
 

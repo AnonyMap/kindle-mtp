@@ -27,6 +27,16 @@ WHILE SHARING
   Bazzite: "Kindle (MTP)" appears in Dolphin's / Files' sidebar.
   Mac: use OpenMTP; quit Photos and Image Capture first.
 
+CALIBRE
+  Calibre sees it as an MTP device and sends EPUBs to "documents".
+  - Close it in Dolphin first (KDE: "killall kiod6" if Calibre can't open it);
+    only one program can use an MTP device at a time.
+  - Answer Yes to "Manage the Kindle (MTP)?".
+  - Once: right-click the device icon > Configure this device > Ignored
+    folders: untick "koreader" (much faster scans).
+  - KOReader can then search your Calibre metadata: Tools > Calibre >
+    Search settings > Manage libraries > Rescan disk for calibre libraries.
+
 SAFETY RAILS (automatic)
   - Stops by itself when you unplug the cable, the Kindle sleeps, KOReader
     exits/restarts, or the MTP program dies.

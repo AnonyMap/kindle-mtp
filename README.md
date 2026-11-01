@@ -9,14 +9,15 @@ daemon for as long as KOReader runs, because stock USB mass storage would unmoun
 KOReader itself lives on (`/mnt/us`). MTP avoids that: files are copied through the mounted
 filesystem, so nothing gets unmounted.
 
-> **Status: early test build.** Tested end to end against a simulated Kindle (see
-> [Tests](#tests)). Real-hardware testing on the target device is in progress.
+> **Status: early, working.** On a Kindle 10th gen (FW 5.16.8) with Bazzite Linux: connecting,
+> copying an EPUB and unplugging all work. The rest is covered by the simulated-Kindle test suite
+> (see [Tests](#tests)).
 
 ## Supported devices
 
 | Device | Firmware | Kernel | Status |
 |---|---|---|---|
-| Kindle 10th gen (2019, "KT4") | 5.16.x | 4.1.15-lab126 | Target; in testing |
+| Kindle 10th gen (2019, "KT4") | 5.16.8 | 4.1.15-lab126 | **Works** (basic copy confirmed) |
 | Other Kindles | | | Refused by a kernel-version check. Most likely to work: other older (non-MTP) Kindles whose kernel ships `usb_f_fs.ko` |
 
 Newer Kindles (Scribe, 11th/12th gen) already use MTP from Amazon. For those, see
@@ -45,6 +46,34 @@ On the computer:
 - **Windows:** should work in Explorer (untested).
 
 Don't edit the `koreader` folder from the computer while sharing.
+
+## Using with Calibre
+
+Calibre's built-in MTP driver picks the Kindle up as a generic MTP device. That suits KOReader:
+Calibre sends **EPUB** by default (not the Kindle formats it would pick for a stock Kindle), and
+it puts books in the Kindle's `documents` folder.
+
+1. On the Kindle, start USB file transfer and plug in.
+2. Make sure your file manager isn't holding the device. Only one program can use an MTP device
+   at a time.
+   - **KDE (Bazzite default):** don't open it in Dolphin first. If Calibre says it can't open the
+     device, run `killall kiod6`.
+   - **GNOME:** eject it in Files.
+3. Calibre asks **"Manage the Kindle (MTP)?"**. Choose **Yes**.
+4. Recommended, once: right-click Calibre's device icon → **Configure this device**.
+   - Under **Ignored folders**, untick `koreader`. KOReader's own files are thousands of small
+     files that slow Calibre's scan.
+   - Check that the send-to folder is `documents`.
+   
+   Calibre remembers these settings for this Kindle, because the plugin reports the Kindle's
+   real serial number.
+5. Send books as usual. Tap **Stop** on the Kindle when Calibre has finished.
+
+Calibre also writes its `metadata.calibre` index to the device. KOReader's Calibre plugin can then
+search and browse your books by series, tags and author: **Tools → Calibre → Search settings →
+Manage libraries → Rescan disk for calibre libraries**.
+
+The Flathub (Flatpak) build of Calibre has the USB access this needs.
 
 ## How it works
 

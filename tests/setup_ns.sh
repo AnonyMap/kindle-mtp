@@ -5,7 +5,8 @@ rm -rf "$F"; mkdir -p "$F/proc/999"
 echo "4.1.15-lab126" >"$F/kernel"
 printf 'g_mass_storage 4203 0 - Live 0x0\nusb_f_mass_storage 51007 2 g_mass_storage, Live 0x0\nlibcomposite 49114 2 - Live 0x0\nconfigfs 26493 3 - Live 0x0\n' >"$F/proc/modules"
 echo "fsp /mnt/us fuse.fsp rw 0 0" >"$F/proc/mounts"
-echo "999 (volumd) T 1 1" >"$F/proc/999/stat"; echo 999 >"$F/volumd_pid"
+echo "999 (volumd) T 1 1" >"$F/proc/999/stat"
+printf 'G000AB12CD34EF56\n' >"$F/proc/usid"; echo 999 >"$F/volumd_pid"
 # fake /sys
 mount -t tmpfs none /sys
 mkdir -p /sys/class/udc/ci_hdrc.0 /sys/module/g_mass_storage/parameters /sys/kernel/config /sys/devices/soc0/ci_hdrc.0/gadget/lun0
