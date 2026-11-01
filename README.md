@@ -63,14 +63,26 @@ plugin is just the UI and safety checks around them.
 If any step fails, it rolls back automatically.
 
 **`mtp-stop.sh`** reverses all of this and reloads the stock driver with its original
-parameters.
+parameters. It works in a kernel-safe order:
+1. Unbind the gadget from the USB controller.
+2. Stop the daemon.
+3. Unmount FunctionFS.
+4. Only then remove the configfs function.
+
+On Linux 4.1, removing the function while FunctionFS is still mounted is a use-after-free in
+`f_fs.c`. If anything can't be undone, the script reports it and keeps its saved state, so a
+retry can still restore stock USB.
+
+**`mtp-watch.sh`** is started by the plugin's start call. If KOReader dies without stopping
+MTP, it stops MTP within about a second.
 
 **Plugin safety checks**
 - Watches the USB controller state, so it can stop on unplug.
 - Watches the daemon, so it can stop if it dies.
 - Watches the open book and closes it if the computer replaces or deletes it.
 - Keeps the Kindle awake while sharing.
-- Wraps `Device.exit`, so sharing always stops when KOReader exits.
+- Wraps `Device.exit`, so sharing always stops when KOReader exits; a crash watcher covers
+  crashes.
 - Offers to clean up after a crash.
 
 Nothing is permanent: rebooting the Kindle always restores stock USB.
@@ -119,7 +131,9 @@ If BusyBox is installed, the scripts run under BusyBox ash, as on the device. Th
 - crash recovery;
 - a hung daemon;
 - a failed driver restore;
-- the plugin's behaviour in books, on unplug, sleep, exit and charger vs. computer.
+- the plugin's behaviour in books, on unplug, sleep, exit and charger vs. computer;
+- the crash watcher;
+- the Linux 4.1 FunctionFS teardown order (the fake flags the use-after-free ordering).
 
 ```sh
 sudo sh tests/run.sh

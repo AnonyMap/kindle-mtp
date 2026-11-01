@@ -1,6 +1,11 @@
 #!/bin/sh
+F=/tmp/kmtp-test/fake
 for a in "$@"; do
   case "$a" in
+    */functions/ffs.*)
+      # Linux 4.1: removing the FunctionFS instance while it's mounted is a use-after-free
+      grep -q " functionfs " "$F/proc/mounts" && echo "ORDER-VIOLATION rmdir $a while functionfs mounted" >>"$F/calls"
+      [ -d "$a" ] && rm -rf "$a" || exit 1 ;;
     /sys/kernel/config/*) [ -d "$a" ] && rm -rf "$a" || exit 1 ;;
     *) /tmp/kmtp-test/harness/realbin/rmdir "$a" || exit 1 ;;
   esac

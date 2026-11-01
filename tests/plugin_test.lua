@@ -7,7 +7,8 @@ function UIManager:unschedule(f) for i=#tasks,1,-1 do if tasks[i]==f then table.
 function UIManager:show(w) shown[#shown+1]=w; note("show "..w.kind.." "..((w.text or w.title or ""):gsub("\n+"," | "):sub(1,140))) end
 function UIManager:close(w) for i=#shown,1,-1 do if shown[i]==w then table.remove(shown,i) end end end
 function UIManager:forceRePaint() end
-function UIManager:flushSettings() end
+function UIManager:flushSettings() local R = package.loaded["apps/reader/readerui"]; if R and R.instance then R.instance:saveSettings() end end
+function UIManager:getTopmostVisibleWidget() return shown[#shown] end
 local function runTasks(n) for _=1,(n or 1) do local t = tasks; tasks = {}; for _,f in ipairs(t) do f() end end end
 local function widget(kind) return { new = function(_, o) o = o or {}; o.kind = kind; return o end } end
 local settings = {}
@@ -22,6 +23,8 @@ package.preload["ui/widget/infomessage"] = function() return widget("InfoMessage
 package.preload["ui/widget/textviewer"] = function() return widget("TextViewer") end
 package.preload["ui/widget/notification"] = function() return { SOURCE_ALWAYS_SHOW=0x8000,
   notify=function(_, t) notes[#notes+1]=t; note("notify "..t) end } end
+package.preload["ui/event"] = function() return { new=function(_, name) return { name=name } end } end
+package.preload["ffi/posix_h"] = function() require("ffi").cdef("int getpid(void);"); return true end
 package.preload["dispatcher"] = function() return { registerAction=function() end } end
 package.preload["pluginshare"] = function() return {} end
 package.preload["ui/uimanager"] = function() return UIManager end
@@ -47,8 +50,12 @@ package.loaded["apps/reader/readerui"] = ReaderUI
 local BOOK = "/tmp/kmtp-test/fake/book.epub"
 local function openBook()
   os.execute("echo epubdata > "..BOOK)
-  ReaderUI.instance = { document = { file = BOOK }, saveSettings=function() saved = saved+1 end,
-    onHome=function() homed = homed+1; ReaderUI.instance = nil end }
+  local r
+  r = { kind="ReaderUI", document = { file = BOOK }, saveSettings=function() saved = saved+1 end,
+    handleEvent=function() end,
+    onHome=function() homed = homed+1; UIManager:close(r); ReaderUI.instance = nil end }
+  ReaderUI.instance = r
+  table.insert(shown, 1, r)   -- the reader sits at the bottom of the window stack
 end
 
 local Plugin = dofile("/tmp/kmtp-test/plugin/usbmtp.koplugin/main.lua")
@@ -70,9 +77,12 @@ print("== A. start from inside a book")
 openBook(); udc("not attached")
 local rp = Plugin:new{ ui = mkui(ReaderUI.instance.document) }
 startNow()
-check(saved == 1, "book's settings saved before sharing")
+check(saved == 1, "book's settings saved exactly once before sharing")
+check(top().flush_events_on_show == true, "taps made during start are flushed")
 check(top().kind=="ConfirmBox" and top().dismissable==false and top().ok_text=="Hide" and top().cancel_text=="Stop", "dialog with Hide + Stop")
 check(modules():find("usb_f_fs") ~= nil, "MTP gadget up")
+
+local wp = io.open("/var/tmp/kmtp/watcher.pid"); check(wp ~= nil, "crash watcher started with KOReader's pid"); if wp then wp:close() end
 
 print("== B. Hide, then computer connects")
 local d = top(); UIManager:close(d); d.ok_callback()
@@ -82,9 +92,12 @@ udc("configured"); runTasks()
 check(notes[#notes]:find("Computer connected"), "connection shown as notification while hidden")
 check(Ctl.dialog == nil and not (top() and top().kind=="ConfirmBox"), "dialog not forced back while hidden")
 
-print("== C. computer overwrites the open book")
+print("== C. computer overwrites the open book (with a dictionary popup open)")
+local popup = { kind="DictQuickLookup", text="popup" }; UIManager:show(popup)
 os.execute("echo 'newer version of the book' >> "..BOOK); runTasks(); runTasks()
 check(homed == 1 and ReaderUI.instance == nil, "book closed back to file browser")
+local still = false; for _, w in ipairs(shown) do if w == popup then still = true end end
+check(not still, "popup above the reader closed before the book")
 check(top().kind=="InfoMessage" and top().text:find("changed from the computer"), "explained why")
 check(Ctl.active, "transfer keeps running")
 
@@ -99,6 +112,12 @@ os.remove(BOOK); runTasks(); runTasks()
 check(homed == 2, "deleted book closed")
 check(Ctl.dialog ~= nil, "dialog restored on top of file browser")
 check(shown[#shown].kind=="InfoMessage" and shown[#shown].text:find("deleted"), "explained deletion")
+
+print("== E0. computer goes to sleep / re-enumerates: keep going")
+udc("suspended"); runTasks(); runTasks(); runTasks()
+udc("addressed"); runTasks(); runTasks()
+check(Ctl.active, "suspended/addressed states don't count as unplug")
+udc("configured"); runTasks()
 
 print("== E. unplug from inside a book auto-stops")
 openBook(); Ctl:rememberOpenBook(); udc("not attached"); runTasks(); runTasks()

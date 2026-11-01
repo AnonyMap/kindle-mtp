@@ -68,9 +68,21 @@ expect() { # expect NAME OUTPUT pattern...
     echo "PASS ${_name}"; PASS=$((PASS + 1))
 }
 
+expect_not() { # expect_not NAME OUTPUT pattern
+    if printf '%s\n' "$2" | grep -q -- "$3"; then
+        echo "FAIL $1: found '$3'"; printf '%s\n' "$2" | grep -- "$3" | sed 's/^/    /'
+        FAIL=$((FAIL + 1))
+    else
+        echo "PASS $1"; PASS=$((PASS + 1))
+    fi
+}
+
 echo "== shell scripts (BusyBox: ${BB})"
 fresh_plugin; o="$(ns : sh "${H}/scenarios/scripts-cycle.sh")"
 expect "start/stop cycle (configfs)" "$o" "MTP is ON (mode: configfs" "MTP is OFF. Safe to unplug." "^g_mass_storage 1000" "MTP is not active. Nothing to do."
+expect_not "teardown order safe for Linux 4.1 FunctionFS" "$o" "ORDER-VIOLATION"
+fresh_plugin; o="$(ns : sh "${H}/scenarios/scripts-watcher.sh")"
+expect "crash watcher stops MTP when KOReader dies" "$o" "MTP is ON" "watcher: process" "state: gone" "modules:.*g_mass_storage"
 
 run_start() { fresh_plugin; ns "$1" sh "${H}/scenarios/scripts-start-only.sh"; }
 o="$(run_start 'touch $F/umtprd_fail')"
