@@ -1,10 +1,21 @@
-# Push a tag like v0.5 to publish a release. The tag must match usbmtp.koplugin/mtp/VERSION.
-# The release gets the plugin zip and SHA256SUMS, which the plugin's updater downloads.
+# Publishes the plugin zip + SHA256SUMS that the plugin's updater downloads.
+#
+# Works either way you make a release:
+#   - push a tag:                 git tag v0.6 && git push origin v0.6
+#   - or create the release on GitHub ("Draft a new release", new tag v0.6, Publish)
+# If the release already exists, the assets are attached to it (your notes are kept).
+# To (re)build assets for an existing tag: Actions > Release > Run workflow > tag.
+# The tag must match usbmtp.koplugin/mtp/VERSION at that tag.
 name: Release
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build release assets for (e.g. v0.5)"
+        required: true
 
 permissions:
   contents: write
@@ -12,22 +23,38 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Validate tag name
+        run: |
+          case "$TAG" in
+            v[0-9]*) ;;
+            *) echo "Not a version tag: $TAG"; exit 1 ;;
+          esac
+
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
 
       - name: Check tag matches VERSION
         run: |
           v="$(tr -d ' \n' < usbmtp.koplugin/mtp/VERSION)"
-          if [ "v$v" != "${GITHUB_REF_NAME}" ]; then
-            echo "Tag ${GITHUB_REF_NAME} does not match VERSION $v"; exit 1
+          if [ "v$v" != "$TAG" ]; then
+            echo "Tag $TAG does not match VERSION $v"; exit 1
           fi
 
       - name: Build assets
         run: sh tools/make-release.sh
 
-      - name: Create release
+      - name: Create release, or attach assets to the existing one
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" dist/*.zip dist/SHA256SUMS \
-            --title "${GITHUB_REF_NAME}" --generate-notes --verify-tag
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG exists; attaching assets"
+            gh release upload "$TAG" dist/*.zip dist/SHA256SUMS --clobber
+          else
+            gh release create "$TAG" dist/*.zip dist/SHA256SUMS \
+              --title "$TAG" --generate-notes --verify-tag
+          fi
