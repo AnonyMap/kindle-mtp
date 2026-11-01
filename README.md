@@ -265,17 +265,25 @@ sh tools/build-umtprd.sh   # needs gcc-arm-linux-gnueabi; see the script for Baz
 ## Releasing
 
 1. Bump `usbmtp.koplugin/mtp/VERSION`, run the tests, and merge to `main`.
-2. Tag and push:
-   ```sh
-   git tag v0.5 && git push origin v0.5
-   ```
-3. The **Release** workflow:
+2. Make the release, either way:
+   - **On GitHub:** Releases → **Draft a new release** → new tag `v<VERSION>` (e.g. `v0.6`) →
+     write notes → **Publish**.
+   - **From git:**
+     ```sh
+     git tag v0.6 && git push origin v0.6
+     ```
+3. The **Release** workflow runs on the new tag:
    - checks that the tag matches `VERSION`;
    - builds `usbmtp.koplugin-v<VERSION>.zip` and `SHA256SUMS` with `tools/make-release.sh`
      (reproducible: same code, same zip);
-   - publishes the GitHub Release.
+   - attaches them to the release, creating the release if you pushed only a tag. Your release
+     notes are kept.
    
-   The plugin's **Check for updates** then offers it.
+   The plugin's **Check for updates** then offers it. The notes you wrote are what it shows.
+
+If a release ends up without its two files (for example, the workflow failed), go to
+**Actions → Release → Run workflow**, enter the tag, and run it again. The plugin refuses a
+release that's missing them, so nothing breaks in the meantime.
 
 ## Tests
 
