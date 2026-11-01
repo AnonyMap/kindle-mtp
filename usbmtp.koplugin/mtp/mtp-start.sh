@@ -5,6 +5,8 @@
 #
 # Env overrides:  KMTP_MODE=gffs  (skip configfs, use the legacy g_ffs gadget)
 #                 FORCE=1         (skip the kernel-version check)
+#                 KMTP_WATCH_PID=<pid>  (stop automatically if that process dies;
+#                                        the KOReader plugin passes its own pid)
 
 # shellcheck source=lib/common.sh
 . "$(dirname "$0")/lib/common.sh"
@@ -124,7 +126,7 @@ if [ "${MODE}" = "configfs" ]; then
     log "setting up configfs MTP gadget"
     if ! setup_configfs; then
         log "configfs setup failed, cleaning up and trying legacy g_ffs"
-        teardown_gadget
+        teardown_gadget || fail "could not clean up the half-built configfs gadget"
         MODE="gffs"
     fi
 fi
@@ -158,8 +160,15 @@ if [ "${MODE}" = "configfs" ]; then
     echo "${UDC_NAME}" >"${GADGET}/UDC" || fail "could not bind gadget to ${UDC_NAME}"
 fi
 
-sleep 1
+usleep 500000 2>/dev/null || sleep 1
 daemon_pid >/dev/null || fail "umtprd died after binding"
+
+# Crash safety: if the caller (KOReader) dies without stopping us, stop ourselves.
+if [ -n "${KMTP_WATCH_PID:-}" ]; then
+    sh "${KMTP_SRC}/mtp-watch.sh" "${KMTP_WATCH_PID}" >/dev/null 2>&1 </dev/null &
+    echo $! >"${KMTP_WATCHER_PIDFILE}"
+    log "watching process ${KMTP_WATCH_PID}"
+fi
 
 log "MTP is ON (mode: ${MODE}, USB: $(udc_state))"
 log "Plug in the cable if it isn't already. Keep the Kindle awake while copying."

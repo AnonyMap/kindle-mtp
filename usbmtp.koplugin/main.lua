@@ -21,6 +21,7 @@ end
 
 local ConfirmBox = require("ui/widget/confirmbox")
 local Dispatcher = require("dispatcher")
+local Event = require("ui/event")
 local InfoMessage = require("ui/widget/infomessage")
 local Notification = require("ui/widget/notification")
 local PluginShare = require("pluginshare")
@@ -30,6 +31,10 @@ local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
 local _ = require("gettext")
+
+local ffi = require("ffi")
+require("ffi/posix_h")
+local KOREADER_PID = ffi.C.getpid()
 
 local STATE_FILE = "/var/tmp/kmtp/state"
 local PID_FILE = "/var/tmp/kmtp/umtprd.pid"
@@ -96,8 +101,8 @@ local Ctl = {
     exit_hooked = false,
 }
 
-function Ctl:runScript(script)
-    local cmd = string.format("sh '%s/%s' >/dev/null 2>&1", self.mtp_dir, script)
+function Ctl:runScript(script, env)
+    local cmd = string.format("%ssh '%s/%s' >/dev/null 2>&1", env or "", self.mtp_dir, script)
     logger.info("usbmtp: running", cmd)
     local rc = os.execute(cmd)
     logger.info("usbmtp:", script, "returned", rc)
@@ -159,13 +164,12 @@ function Ctl:hookExit()
     end
 end
 
-function Ctl:rememberOpenBook()
-    local r = openReader()
-    if r then
-        self.book = { file = r.document.file, stamp = bookStamp(r.document.file) }
-    else
-        self.book = nil
+function Ctl:rememberOpenBook(file)
+    if not file then
+        local r = openReader()
+        file = r and r.document.file
     end
+    self.book = file and { file = file, stamp = bookStamp(file) } or nil
 end
 
 function Ctl:start()
@@ -179,12 +183,12 @@ function Ctl:start()
     end
 
     -- Get everything KOReader holds in memory onto disk before the computer looks.
-    local r = openReader()
-    if r then r:saveSettings() end
+    -- (FlushSettings also makes an open ReaderUI save the book's settings.)
     UIManager:flushSettings()
 
     local busy = showBusy(_("Starting USB file transfer…"))
-    local ok = self:runScript("mtp-start.sh")
+    -- The scripts' crash watcher stops MTP if this process dies without doing it.
+    local ok = self:runScript("mtp-start.sh", string.format("KMTP_WATCH_PID=%d ", KOREADER_PID))
     UIManager:close(busy)
 
     if not ok then
@@ -276,6 +280,7 @@ function Ctl:showDialog()
     self.dialog = ConfirmBox:new{
         text = self:dialogText(),
         dismissable = false,
+        flush_events_on_show = true, -- drop taps made while start was blocking
         cancel_text = _("Stop"),
         cancel_callback = function()
             self.dialog = nil
@@ -332,6 +337,16 @@ function Ctl:checkOpenBook()
     local was_shown = self.dialog ~= nil
     self:closeDialog()
     self.book = nil
+    -- Close menus/popups sitting on the reader first: they hold references to
+    -- the document and would crash on the next tap once it's closed.
+    r:handleEvent(Event:new("CloseReaderMenu"))
+    r:handleEvent(Event:new("CloseConfigMenu"))
+    if r.highlight and r.highlight.onClose then r.highlight:onClose() end
+    for _ = 1, 10 do
+        local top = UIManager:getTopmostVisibleWidget()
+        if not top or top == r then break end
+        UIManager:close(top)
+    end
     r:onHome() -- close the book, back to the file browser at its folder
     UIManager:nextTick(function()
         if was_shown then self:showDialog() end
@@ -352,8 +367,10 @@ function Ctl:poll()
     end
 
     local st = udcState()
-    if st == "configured" then
+    if st ~= "not attached" then
         self.lost_polls = 0
+    end
+    if st == "configured" then
         if not self.connected then
             self.connected = true
             if self.dialog then
@@ -362,7 +379,9 @@ function Ctl:poll()
                 notify(_("Computer connected over USB."))
             end
         end
-    elseif self.connected then
+    elseif self.connected and st == "not attached" then
+        -- Only VBUS loss means unplugged. "suspended" (computer asleep) and the
+        -- default/addressed states seen while a host re-enumerates are not.
         self.lost_polls = self.lost_polls + 1
         if self.lost_polls >= 2 then
             self:stop(_("The cable was unplugged."))
@@ -396,6 +415,7 @@ function Ctl:onCharging()
             UIManager:show(ConfirmBox:new{
                 text = _("Computer detected.\n\nStart USB file transfer (MTP)?"),
                 ok_text = _("Start"),
+                flush_events_on_show = true,
                 ok_callback = function() self:start() end,
             })
         elseif tries < 16 then
@@ -423,7 +443,7 @@ function Ctl:onResume()
     if self.stopped_by_sleep then
         self.stopped_by_sleep = false
         UIManager:scheduleIn(1, function()
-            UIManager:show(InfoMessage:new{ text = _("USB file transfer was stopped because the Kindle went to sleep."), timeout = 5 })
+            UIManager:show(InfoMessage:new{ text = _("USB file transfer was stopped because the Kindle went to sleep.\n\nIf a file was being copied at that moment, copy it again."), timeout = 5 })
         end)
     end
 end
@@ -470,7 +490,8 @@ function UsbMtp:onReaderReady()
     -- A book opened while sharing: re-show the dialog unless the user hid it,
     -- since the new reader screen is drawn on top of it.
     if Ctl.active then
-        Ctl:rememberOpenBook()
+        -- ReaderUI.instance isn't set yet when ReaderReady fires; use our own ui.
+        Ctl:rememberOpenBook(self.ui.document and self.ui.document.file)
         if not Ctl.hidden then
             UIManager:nextTick(function() Ctl:showDialog() end)
         end
