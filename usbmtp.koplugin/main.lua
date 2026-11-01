@@ -116,7 +116,7 @@ function Ctl:lastRunResult()
     if not f then return nil, false end
     local err, not_restored
     for line in f:lines() do
-        if line:find("=== kindle-mtp ", 1, true) then
+        if line:find("=== usbmtp ", 1, true) then
             err, not_restored = nil, false -- a new run starts here
         else
             local e = line:match("ERROR: (.*)$")

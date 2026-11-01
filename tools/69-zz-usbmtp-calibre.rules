@@ -7,9 +7,9 @@
 # Matches only devices whose manufacturer string is "KOReader".
 # Trade-off: your file manager won't show the Kindle while this is installed.
 #
-# Install:  sudo cp 69-zz-kindle-mtp-calibre.rules /etc/udev/rules.d/
+# Install:  sudo cp 69-zz-usbmtp-calibre.rules /etc/udev/rules.d/
 #           sudo udevadm control --reload      (then replug the Kindle)
-# Remove:   sudo rm /etc/udev/rules.d/69-zz-kindle-mtp-calibre.rules
+# Remove:   sudo rm /etc/udev/rules.d/69-zz-usbmtp-calibre.rules
 #           sudo udevadm control --reload
 #
 # Sorts after 69-libmtp.rules (which sets the properties) and before

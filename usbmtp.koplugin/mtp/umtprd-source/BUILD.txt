@@ -8,6 +8,6 @@ Build (Ubuntu 24.04, gcc-arm-linux-gnueabi 13.2):
 
 Statically linked so it doesn't depend on the Kindle's system libraries.
 
-Patched with kindle-mtp-msgqueue-shutdown.patch (apply with: patch -p1 < it)
+Patched with usbmtp-msgqueue-shutdown.patch (apply with: patch -p1 < it)
 before building: fixes a hang on exit when USB init fails (the message-queue
 thread ignored its wake-up and blocked forever in mq_receive).

@@ -1,4 +1,4 @@
-# Shared helpers for kindle-mtp. Sourced by mtp-start.sh, mtp-stop.sh, mtp-status.sh.
+# Shared helpers for usbmtp. Sourced by mtp-start.sh, mtp-stop.sh, mtp-status.sh.
 # Target: Kindle 10th gen (KT4), FW 5.16.x, kernel 4.1.15-lab126. Runs as root.
 
 export PATH="/usr/sbin:/sbin:/usr/bin:/bin:${PATH}"

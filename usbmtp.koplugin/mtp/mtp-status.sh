@@ -1,6 +1,6 @@
 #!/bin/sh
-# kindle-mtp: show what's going on. Read-only.
-# Usage:  sh /mnt/us/kindle-mtp/mtp-status.sh
+# usbmtp: show what's going on. Read-only.
+# Usage:  sh /mnt/us/koreader/plugins/usbmtp.koplugin/mtp/mtp-status.sh
 
 # shellcheck source=lib/common.sh
 . "$(dirname "$0")/lib/common.sh"

@@ -1,4 +1,4 @@
-# kindle-mtp
+# usbmtp.koplugin
 
 A [KOReader](https://github.com/koreader/koreader) plugin that lets a computer copy books to a
 jailbroken Kindle over USB **while KOReader keeps running**, using MTP. That includes from inside
@@ -21,18 +21,43 @@ filesystem, so nothing gets unmounted.
 | Kindle 10th gen (2019, "KT4") | 5.16.8 | 4.1.15-lab126 | **Works** (file manager and Calibre confirmed) |
 | Other Kindles | | | Refused by a kernel-version check. Most likely to work: other older (non-MTP) Kindles whose kernel ships `usb_f_fs.ko` |
 
-Newer Kindles (Scribe, 11th/12th gen) already use MTP from Amazon. For those, see
-[kindlemtp.koplugin](https://github.com/danihrndzld/kindlemtp.koplugin), which drives Amazon's
-own MTP responder.
+## usbmtp vs. kindlemtp: which one do I need?
+
+[kindlemtp.koplugin](https://github.com/danihrndzld/kindlemtp.koplugin) solves the same problem
+for a different set of Kindles. You need exactly one of them, and which one depends on how your
+Kindle connects to a computer on **stock firmware**, with KOReader closed:
+
+| If, with KOReader closed, your Kindle shows up as… | Your Kindle | Use |
+|---|---|---|
+| a **USB drive** (a drive letter, or a mounted disk) | Older models without Amazon's MTP software. Currently only the Kindle 10th gen (2019) is supported; others are refused by a kernel check (see [Supported devices](#supported-devices)) | **usbmtp** (this plugin) |
+| an **MTP device** that needs an MTP app on a Mac (e.g. "Kindle Scribe") | Models where Amazon switched USB to MTP (Scribe, Colorsoft, recent Paperwhites; firmware 5.16+) | **kindlemtp** |
+
+To check from KOReader's terminal or SSH: `ls /usr/bin/mtp.sh`. If the file exists, use
+kindlemtp; if not, use usbmtp.
+
+How they differ under the hood:
+
+| | usbmtp (this plugin) | kindlemtp |
+|---|---|---|
+| MTP program | Brings its own (uMTP-Responder, bundled) | Remote-controls Amazon's built-in `tizen-mtp` |
+| USB setup | Swaps the stock mass-storage gadget for its own FunctionFS gadget, and restores it afterwards | Uses Amazon's existing MTP gadget |
+| Needs | Kernel FunctionFS modules (present on the Kindle 10th gen) | Amazon's `mtp.sh` and `tizen-mtp` (firmware 5.16+ on MTP models) |
+| Storage it serves | `/mnt/base-us` (FAT32) | `/mnt/base-us` (ext4 on those models) |
+
+Each one refuses to start on the other's devices, so installing the wrong one does no harm; it
+just won't start. kindlemtp's README says older Kindles don't need it because their mass storage
+"works without this plugin". That's true only after exiting KOReader. While KOReader runs, mass
+storage is switched off, and usbmtp exists to fill that gap.
 
 ## Install
 
 1. Exit KOReader so the Kindle shows up as a USB drive.
 2. Copy the `usbmtp.koplugin` folder into `koreader/plugins/` on the Kindle. If you have an older
    version, replace the old folder.
-   - If you used GitHub's **Download ZIP**, it unpacks to `kindle-mtp-main/`. Copy only the
-     `usbmtp.koplugin` folder from inside it, not the whole repo folder; KOReader only loads
-     folders ending in `.koplugin`.
+   - If you used GitHub's **Download ZIP**, it unpacks to `usbmtp.koplugin-main/`. Copy the
+     `usbmtp.koplugin` folder from **inside** it, not the outer folder. KOReader would look for
+     the plugin files directly inside a folder called `usbmtp.koplugin-main.koplugin`, which
+     doesn't exist.
 3. Eject, unplug, and start KOReader **from KUAL**. The plugin needs KOReader's normal launcher.
 4. Check the version: Tools → **USB file transfer (MTP)** → **About (vX.Y)**.
 
@@ -69,9 +94,11 @@ it puts books in the Kindle's `documents` folder.
    Two fixes:
    - **One-off:** quit Calibre, run `killall kiod6` (GNOME: eject it in Files), start Calibre,
      then replug the Kindle.
-   - **Permanent:** install [`tools/69-zz-kindle-mtp-calibre.rules`](tools/69-zz-kindle-mtp-calibre.rules).
+   - **Permanent:** install [`tools/69-zz-usbmtp-calibre.rules`](tools/69-zz-usbmtp-calibre.rules).
      It hides this device from the desktop's device handling so Calibre always gets it; the file
      manager stops showing it. Instructions are inside the file.
+     (Installed it under its earlier name, `69-zz-kindle-mtp-calibre.rules`? That file is
+     identical and keeps working; no need to change anything.)
    
    To see who holds the device, run [`tools/host-check.sh`](tools/host-check.sh): look for
    `driver=usbfs`, then the process list.
@@ -195,7 +222,7 @@ Reports are welcome.
 | `usbmtp.koplugin/mtp/umtprd-source/` | uMTP-Responder source, license (GPLv3) and our patch |
 | `tools/build-umtprd.sh` | Reproducible rebuild of the umtprd binary |
 | `tools/host-check.sh` | Linux host diagnostics |
-| `tools/69-zz-kindle-mtp-calibre.rules` | Optional udev rule so KDE/GNOME don't block Calibre |
+| `tools/69-zz-usbmtp-calibre.rules` | Optional udev rule so KDE/GNOME don't block Calibre |
 | `tests/` | Simulated-Kindle test suite |
 
 ## Building the MTP binary

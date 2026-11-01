@@ -1,7 +1,9 @@
 #!/bin/sh
-# kindle-mtp: share the Kindle's storage over MTP while KOReader keeps running.
-# Usage (from KOReader's terminal or SSH):  sh /mnt/us/kindle-mtp/mtp-start.sh
-# Stop with:                                 sh /mnt/us/kindle-mtp/mtp-stop.sh
+# usbmtp: share the Kindle's storage over MTP while KOReader keeps running.
+# Usage (from KOReader's terminal or SSH):
+#   sh /mnt/us/koreader/plugins/usbmtp.koplugin/mtp/mtp-start.sh
+# Stop with:
+#   sh /mnt/us/koreader/plugins/usbmtp.koplugin/mtp/mtp-stop.sh
 #
 # Env overrides:  KMTP_MODE=gffs  (skip configfs, use the legacy g_ffs gadget)
 #                 FORCE=1         (skip the kernel-version check)
@@ -12,7 +14,7 @@
 . "$(dirname "$0")/lib/common.sh"
 
 : >"${KMTP_LOG}" 2>/dev/null
-log "=== kindle-mtp start ($(date)) version $(cat "${KMTP_SRC}/VERSION" 2>/dev/null) ==="
+log "=== usbmtp start ($(date)) version $(cat "${KMTP_SRC}/VERSION" 2>/dev/null) ==="
 log "kernel $(uname -r), volumd: $(volumd_state), USB: $(udc_state)"
 
 # ---------- preflight (nothing has been changed yet) ----------
