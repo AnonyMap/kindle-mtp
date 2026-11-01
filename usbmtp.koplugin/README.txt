@@ -11,6 +11,12 @@ Confirmed: FW 5.16.8 with Bazzite Linux (KDE), file manager and Calibre.
 Nothing is permanent: if anything gets stuck, rebooting the Kindle restores
 stock USB.
 
+WRITTEN BY AI: this plugin was developed with an AI model (Anthropic's
+Claude). Its author directed and tested it but didn't write the code. It
+has been tested on one Kindle. It runs as root and swaps USB kernel modules
+while KOReader runs. Read the project README ("How this was made") before
+trusting it.
+
 WHICH PLUGIN? With KOReader closed, does your Kindle show up on a computer
 as a USB drive? Then this is the right plugin (currently Kindle 10th gen
 only; see Built for). If it shows up as an MTP device
