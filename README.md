@@ -9,15 +9,16 @@ daemon for as long as KOReader runs, because stock USB mass storage would unmoun
 KOReader itself lives on (`/mnt/us`). MTP avoids that: files are copied through the mounted
 filesystem, so nothing gets unmounted.
 
-> **Status: early, working.** On a Kindle 10th gen (FW 5.16.8) with Bazzite Linux: connecting,
-> copying an EPUB and unplugging all work. The rest is covered by the simulated-Kindle test suite
-> (see [Tests](#tests)).
+> **Status: v0.4, early but working.** Confirmed on a Kindle 10th gen (FW 5.16.8) with Bazzite
+> Linux (KDE): copying books from the file manager, and sending books from Calibre (Flatpak
+> 9.17). Everything else is covered by the simulated-Kindle test suite (see [Tests](#tests)) but
+> not yet confirmed on hardware; see [Not yet tested on hardware](#not-yet-tested-on-hardware).
 
 ## Supported devices
 
 | Device | Firmware | Kernel | Status |
 |---|---|---|---|
-| Kindle 10th gen (2019, "KT4") | 5.16.8 | 4.1.15-lab126 | **Works** (basic copy confirmed) |
+| Kindle 10th gen (2019, "KT4") | 5.16.8 | 4.1.15-lab126 | **Works** (file manager and Calibre confirmed) |
 | Other Kindles | | | Refused by a kernel-version check. Most likely to work: other older (non-MTP) Kindles whose kernel ships `usb_f_fs.ko` |
 
 Newer Kindles (Scribe, 11th/12th gen) already use MTP from Amazon. For those, see
@@ -27,8 +28,13 @@ own MTP responder.
 ## Install
 
 1. Exit KOReader so the Kindle shows up as a USB drive.
-2. Copy `usbmtp.koplugin/` into `koreader/plugins/` on the Kindle.
+2. Copy the `usbmtp.koplugin` folder into `koreader/plugins/` on the Kindle. If you have an older
+   version, replace the old folder.
+   - If you used GitHub's **Download ZIP**, it unpacks to `kindle-mtp-main/`. Copy only the
+     `usbmtp.koplugin` folder from inside it, not the whole repo folder; KOReader only loads
+     folders ending in `.koplugin`.
 3. Eject, unplug, and start KOReader **from KUAL**. The plugin needs KOReader's normal launcher.
+4. Check the version: Tools → **USB file transfer (MTP)** → **About (vX.Y)**.
 
 ## Use
 
@@ -83,7 +89,8 @@ Calibre also writes its `metadata.calibre` index to the device. KOReader's Calib
 search and browse your books by series, tags and author: **Tools → Calibre → Search settings →
 Manage libraries → Rescan disk for calibre libraries**.
 
-The Flathub (Flatpak) build of Calibre has the USB access this needs.
+The Flathub (Flatpak) build of Calibre has the USB access this needs. It was confirmed working on
+Bazzite KDE with Calibre 9.17.
 
 ## How it works
 
@@ -92,12 +99,14 @@ plugin is just the UI and safety checks around them.
 
 **`mtp-start.sh`**
 1. Checks that it's safe to start; nothing is changed until all checks pass.
-2. Saves the stock `g_mass_storage` module's parameters, then unloads it.
-3. Builds a configfs USB gadget with a FunctionFS function (falls back to the legacy `g_ffs`
+2. Copies umtprd and its config to `/var/tmp`. It stamps in the Kindle's own serial number (from
+   `/proc/usid`, as stock USB mode does) and the plugin version.
+3. Saves the stock `g_mass_storage` module's parameters, then unloads it.
+4. Builds a configfs USB gadget with a FunctionFS function (falls back to the legacy `g_ffs`
    module if configfs isn't available).
-4. Starts [uMTP-Responder](https://github.com/viveris/uMTP-Responder) from `/var/tmp`, serving
+5. Starts [uMTP-Responder](https://github.com/viveris/uMTP-Responder) from `/var/tmp`, serving
    `/mnt/base-us` (the real vfat partition under Amazon's `fsp` FUSE layer).
-5. Binds the gadget to the `ci_hdrc.0` USB controller.
+6. Binds the gadget to the `ci_hdrc.0` USB controller.
 
 If any step fails, it rolls back automatically.
 
@@ -136,17 +145,58 @@ sh /mnt/us/koreader/plugins/usbmtp.koplugin/mtp/mtp-stop.sh
 
 ## Troubleshooting
 
-- **Which version is on the Kindle?** Menu → USB file transfer (MTP) → **About (vX.Y)**, or
-  `usbmtp.koplugin/mtp/VERSION`. When installing from GitHub, make sure the `usbmtp.koplugin`
-  folder you copy replaces the old one in `koreader/plugins/`.
-
-- Run **Status / diagnostics** from the plugin menu.
-- Logs are in `koreader/plugins/usbmtp.koplugin/mtp/`: `mtp.log` (the scripts) and
-  `umtprd-last.log` (the MTP program).
-- On Linux, check the host side with:
+- **Which version is on the Kindle?** Tools → USB file transfer (MTP) → **About (vX.Y)**, or the
+  file `usbmtp.koplugin/mtp/VERSION`. If it isn't the version you expect, KOReader is still
+  loading an old copy; see [Install](#install).
+- **Calibre doesn't see the Kindle**, but the file manager does: another program is holding the
+  MTP device. On KDE that's `kiod6`. See step 2 of [Using with Calibre](#using-with-calibre).
+- **The computer doesn't see the Kindle at all:**
+  - check that the plugin says "USB file transfer is on";
+  - check that the cable carries data, not just power;
+  - on a Mac, use an MTP app (OpenMTP).
+- **Kindle side:** run **Status / diagnostics** from the plugin menu. Logs are in
+  `koreader/plugins/usbmtp.koplugin/mtp/`: `mtp.log` (the scripts) and `umtprd-last.log` (the
+  MTP program). Read them after exiting KOReader, or over SSH.
+- **Computer side (Linux):** run [`tools/host-check.sh`](tools/host-check.sh) with the Kindle
+  plugged in and MTP on. It shows:
+  - whether the device is visible;
+  - whether your user can open it;
+  - what udev decided about it;
+  - which programs hold it.
+  
+  The kernel log helps too:
   ```sh
   journalctl -k -b | grep -iE "usb|1d6b" | tail -20
   ```
+- **Anything stuck:** reboot the Kindle. That always restores stock USB.
+
+When reporting a problem, open an issue with the plugin version, the two log files, and the
+`host-check.sh` output if it's a detection problem.
+
+## Not yet tested on hardware
+
+These pass in the simulated-Kindle suite but haven't been confirmed on a real device yet:
+- file names longer than 72 characters (fixed in v0.3; before that they failed to list);
+- large files (50 MB+), with the 8 KiB USB buffers on the i.MX6;
+- automatic stop when the cable is pulled without tapping Stop;
+- the "ask to start when plugged in" prompt, and wall chargers correctly not triggering it;
+- Hide and keep reading during a transfer;
+- stock USB working normally after exiting KOReader;
+- Windows and macOS hosts.
+
+Reports are welcome.
+
+## Repository layout
+
+| Path | What it is |
+|---|---|
+| `usbmtp.koplugin/` | The plugin. This is the only folder that goes on the Kindle |
+| `usbmtp.koplugin/mtp/` | Start, stop, status and watcher scripts, umtprd and its config, version file |
+| `usbmtp.koplugin/mtp/umtprd-source/` | uMTP-Responder source, license (GPLv3) and our patch |
+| `tools/build-umtprd.sh` | Reproducible rebuild of the umtprd binary |
+| `tools/host-check.sh` | Linux host diagnostics |
+| `tools/69-zz-kindle-mtp-calibre.rules` | Optional udev rule so KDE/GNOME don't block Calibre |
+| `tests/` | Simulated-Kindle test suite |
 
 ## Building the MTP binary
 
@@ -176,6 +226,7 @@ If BusyBox is installed, the scripts run under BusyBox ash, as on the device. Th
 - a failed driver restore;
 - the plugin's behaviour in books, on unplug, sleep, exit and charger vs. computer;
 - the crash watcher;
+- the serial number and version stamping;
 - the Linux 4.1 FunctionFS teardown order (the fake flags the use-after-free ordering).
 
 ```sh
