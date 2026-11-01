@@ -14,6 +14,10 @@ filesystem, so nothing gets unmounted.
 > 9.17). Everything else is covered by the simulated-Kindle test suite (see [Tests](#tests)) but
 > not yet confirmed on hardware; see [Not yet tested on hardware](#not-yet-tested-on-hardware).
 
+> [!IMPORTANT]
+> **This plugin was written by AI.** I'm sceptical of AI-made software myself, so you should know
+> before you install it. Details in [How this was made](#how-this-was-made).
+
 ## Supported devices
 
 | Device | Firmware | Kernel | Status |
@@ -258,6 +262,35 @@ If BusyBox is installed, the scripts run under BusyBox ash, as on the device. Th
 ```sh
 sudo sh tests/run.sh
 ```
+
+## How this was made
+
+This plugin was developed with an AI model, Anthropic's Claude, over a single long conversation.
+I didn't write the code myself. My part was directing it, deciding what to build, and testing it
+on my own Kindle. I'm sceptical of AI-made software, so here's what that means in practice.
+
+**How it was checked:**
+- Claims about how the Kindle, Linux kernel, KOReader, uMTP-Responder and Calibre behave were
+  checked against their source code, not assumed.
+- A separate AI review went through the code looking for bugs. It was given only the code and a
+  short description, not the development conversation or its conclusions. It found two serious
+  bugs, both since fixed:
+  - a kernel use-after-free in the stop order;
+  - USB buffers too small for long filenames.
+- The [test suite](#tests) runs the real scripts and plugin code against a simulated Kindle. It
+  includes a test proven to fail on the buggy stop order.
+
+**What that doesn't give you:**
+- It has been used on one Kindle, by one person. Many things are still
+  [untested on real hardware](#not-yet-tested-on-hardware).
+- I can't promise I'll understand and fix every bug myself.
+- It runs as root and swaps the Kindle's USB kernel modules while KOReader is running. A reboot
+  always restores stock USB, and nothing is written to the Kindle's system partitions. Still, it
+  is the kind of software where you should read the code, or at least the
+  [How it works](#how-it-works) section, before trusting it.
+
+This is a personal project, shared as-is in case it helps someone with the same Kindle. If I
+end up being its only user, that's fine with me. Bug reports and fixes are welcome.
 
 ## License
 
