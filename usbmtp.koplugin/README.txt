@@ -4,7 +4,7 @@ Lets your computer copy books over USB while KOReader stays open, from the
 file browser (any view, including mosaic/bookshelf) or inside a book.
 
 Version:  Tools > USB file transfer (MTP) > About, or the file mtp/VERSION
-Project:  https://github.com/AnonyMap/usbmtp.koplugin
+Project:  https://github.com/AnonyMap/usbmtp
 Built for: Kindle 10th gen (2019), firmware 5.16.x, kernel 4.1.15-lab126.
 Confirmed: FW 5.16.8 with Bazzite Linux (KDE), file manager and Calibre.
 
@@ -22,7 +22,7 @@ INSTALL
   1. Exit KOReader so the Kindle appears as a USB drive on your computer.
   2. Copy this "usbmtp.koplugin" folder into  koreader/plugins/  on the
      Kindle, replacing any older copy. (From GitHub's "Download ZIP", copy
-     the usbmtp.koplugin folder from inside usbmtp.koplugin-main.)
+     the usbmtp.koplugin folder from inside usbmtp-main.)
   3. Eject, unplug, start KOReader from KUAL.
   4. Check: Tools > USB file transfer (MTP) > About shows the new version.
 
@@ -77,7 +77,7 @@ IF IT DOESN'T WORK
     plugged in and MTP on; also
       journalctl -k -b | grep -iE "usb|1d6b" | tail -20
   - Something stuck: Menu > Reset USB, or reboot the Kindle.
-  - Report problems at https://github.com/AnonyMap/usbmtp.koplugin/issues
+  - Report problems at https://github.com/AnonyMap/usbmtp/issues
     with the version, the two logs, and host-check.sh output if relevant.
 
 Includes uMTP-Responder by Viveris Technologies (GPLv3); license, source

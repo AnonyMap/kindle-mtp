@@ -1,4 +1,4 @@
-# usbmtp.koplugin
+# usbmtp
 
 A [KOReader](https://github.com/koreader/koreader) plugin that lets a computer copy books to a
 jailbroken Kindle over USB **while KOReader keeps running**, using MTP. That includes from inside
@@ -54,10 +54,9 @@ storage is switched off, and usbmtp exists to fill that gap.
 1. Exit KOReader so the Kindle shows up as a USB drive.
 2. Copy the `usbmtp.koplugin` folder into `koreader/plugins/` on the Kindle. If you have an older
    version, replace the old folder.
-   - If you used GitHub's **Download ZIP**, it unpacks to `usbmtp.koplugin-main/`. Copy the
-     `usbmtp.koplugin` folder from **inside** it, not the outer folder. KOReader would look for
-     the plugin files directly inside a folder called `usbmtp.koplugin-main.koplugin`, which
-     doesn't exist.
+   - If you used GitHub's **Download ZIP**, it unpacks to `usbmtp-main/`. Copy the
+     `usbmtp.koplugin` folder from **inside** it, not the outer folder. KOReader only loads
+     folders whose names end in `.koplugin`, so it ignores `usbmtp-main/`.
 3. Eject, unplug, and start KOReader **from KUAL**. The plugin needs KOReader's normal launcher.
 4. Check the version: Tools → **USB file transfer (MTP)** → **About (vX.Y)**.
 
