@@ -1,11 +1,11 @@
 #!/bin/sh
-# kindle-mtp: stop MTP sharing and restore the stock USB driver.
-# Usage:  sh /mnt/us/kindle-mtp/mtp-stop.sh
+# usbmtp: stop MTP sharing and restore the stock USB driver.
+# Usage:  sh /mnt/us/koreader/plugins/usbmtp.koplugin/mtp/mtp-stop.sh
 
 # shellcheck source=lib/common.sh
 . "$(dirname "$0")/lib/common.sh"
 
-log "=== kindle-mtp stop ($(date)) ==="
+log "=== usbmtp stop ($(date)) ==="
 [ "$(id -u)" = "0" ] || die "must run as root"
 
 if [ ! -f "${KMTP_STATE}" ] && ! daemon_pid >/dev/null && [ ! -d "${GADGET}" ] && ! mod_loaded g_ffs; then

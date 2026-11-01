@@ -1,5 +1,5 @@
 #!/bin/sh
-# kindle-mtp crash watcher: if the process that started MTP (KOReader) dies
+# usbmtp crash watcher: if the process that started MTP (KOReader) dies
 # without stopping it, stop it ourselves, so the stock USB driver is back before
 # the launcher resumes Amazon's volumd.
 # Usage (started by mtp-start.sh):  sh mtp-watch.sh <pid-to-watch>

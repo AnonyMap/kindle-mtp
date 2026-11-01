@@ -84,6 +84,9 @@ check(modules():find("usb_f_fs") ~= nil, "MTP gadget up")
 
 local wp = io.open("/var/tmp/kmtp/watcher.pid"); check(wp ~= nil, "crash watcher started with KOReader's pid"); if wp then wp:close() end
 
+local about = menu_items.usbmtp.sub_item_table[5]
+check(about.text_func() == "About (v0.4)", "About shows the installed version")
+
 print("== B. Hide, then computer connects")
 local d = top(); UIManager:close(d); d.ok_callback()
 check(Ctl.hidden and Ctl.dialog == nil, "dialog hidden, still active")

@@ -116,7 +116,7 @@ function Ctl:lastRunResult()
     if not f then return nil, false end
     local err, not_restored
     for line in f:lines() do
-        if line:find("=== kindle-mtp ", 1, true) then
+        if line:find("=== usbmtp ", 1, true) then
             err, not_restored = nil, false -- a new run starts here
         else
             local e = line:match("ERROR: (.*)$")
@@ -464,6 +464,7 @@ function UsbMtp:init()
             root = lfs.currentdir() .. "/" .. root
         end
         Ctl.mtp_dir = root .. "/mtp"
+        Ctl.version = readFirstLine(Ctl.mtp_dir .. "/VERSION") or "?"
     end
     Ctl:hookExit()
 
@@ -560,7 +561,7 @@ function UsbMtp:addToMainMenu(menu_items)
                 end,
             },
             {
-                text = _("About"),
+                text_func = function() return _("About") .. " (v" .. (Ctl.version or "?") .. ")" end,
                 keep_menu_open = true,
                 callback = function()
                     UIManager:show(InfoMessage:new{
@@ -573,7 +574,7 @@ Tap Hide to keep reading during a transfer. It stops by itself when you unplug, 
 
 Don't edit the "koreader" folder from the computer.
 
-Uses uMTP-Responder (GPLv3) by Viveris Technologies.]]),
+Uses uMTP-Responder (GPLv3) by Viveris Technologies.]]) .. "\n\n" .. _("Version") .. " " .. (Ctl.version or "?"),
                     })
                 end,
             },

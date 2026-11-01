@@ -12,7 +12,7 @@
    0   // number of messages currently on the queue
  };
  
-+/* kindle-mtp patch: set by msgqueue_handler_deinit so the thread exits even when
++/* usbmtp patch: set by msgqueue_handler_deinit so the thread exits even when
 + * deinit happens without a shutdown signal (e.g. after "USB Init failed"). */
 +static volatile sig_atomic_t msgqueue_stop = 0;
 +
@@ -24,7 +24,7 @@
  	do
  	{
 -		ssize_t numreceived = mq_receive(ctx->msgqueue_id, message, MAX_MSG_SIZE + 1, NULL);
-+		/* kindle-mtp patch: bounded wait, so a lost wake-up signal can't hang shutdown. */
++		/* usbmtp patch: bounded wait, so a lost wake-up signal can't hang shutdown. */
 +		struct timespec deadline;
 +		clock_gettime(CLOCK_REALTIME, &deadline);
 +		deadline.tv_sec += 1;
