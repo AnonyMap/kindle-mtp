@@ -4,6 +4,8 @@
 #   dist/SHA256SUMS                       checksum line for that zip
 # Usage:  sh tools/make-release.sh
 set -eu
+# zip stores entry times in local time; pin UTC so the zip is identical on any machine.
+export TZ=UTC
 REPO="$(CDPATH='' cd "$(dirname "$0")/.." && pwd -P)"
 cd "${REPO}"
 VERSION="$(tr -d ' \n' < usbmtp.koplugin/mtp/VERSION)"
