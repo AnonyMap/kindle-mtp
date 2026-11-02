@@ -51,6 +51,11 @@ jobs:
       - name: Run tests (a release that fails them is never published)
         run: sudo --preserve-env=KOREADER_BASE sh tests/run.sh
 
+      # The suite needs root (mount namespaces). Older tags' tests also wrote
+      # into the workspace as root, so make sure the runner user owns it again.
+      - name: Give the workspace back to the runner user
+        run: sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE"
+
       - name: Build assets
         run: sh tools/make-release.sh
 
