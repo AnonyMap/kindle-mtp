@@ -31,6 +31,7 @@ fi
 
 cp -f "${KMTP_DLOG}" "${KMTP_SRC}/umtprd-last.log" 2>/dev/null
 if ! teardown; then
+    list_received
     sync
     log "MTP is off, but stock USB was not restored. Reboot the Kindle."
     exit 1
@@ -39,6 +40,7 @@ if [ "${HAD_STATE}" = "no" ] && ! mod_loaded g_mass_storage; then
     log "stock USB driver missing and no saved settings; loading it with defaults"
     reload_gms || { log "ERROR: could not load the stock USB driver. Reboot the Kindle."; exit 1; }
 fi
+list_received
 rm -rf "${KMTP_RUN}"
 sync
 log "MTP is OFF. Safe to unplug."

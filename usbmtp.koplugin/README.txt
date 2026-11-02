@@ -41,9 +41,9 @@ UPDATING (v0.5 and later)
 
 START IT (any of these)
   - Menu: Tools (wrench) > USB file transfer (MTP) > Start USB file transfer
-  - Plug in: turn on "Ask to start when plugged into a computer" in that
-    menu. Plugging into a computer then offers to start, on any screen.
-    Wall chargers are ignored.
+  - Plug in: in that menu, set "When plugged into a computer" to "ask
+    first" or "start automatically" (default: do nothing). Works on any
+    screen. Wall chargers are ignored.
   - Gesture: Settings > Taps and gestures > Gesture manager > pick a
     gesture > General > "Toggle USB file transfer (MTP)".
 
@@ -51,7 +51,10 @@ WHILE SHARING
   A dialog shows the status with two buttons:
     Stop - ends sharing. Then unplug.
     Hide - keep reading or browsing. A notification tells you when the
-           computer connects. Reopen the dialog from the menu or gesture.
+           computer connects, and "ᴍᴛᴘ" shows in the reader's status bar
+           (can be turned off in the menu). Reopen the dialog from the
+           menu or gesture.
+  After Stop, it lists the books that arrived during the session.
   Linux: "Kindle (MTP)" appears in Dolphin's / GNOME Files' sidebar.
   Mac: use OpenMTP; quit Photos and Image Capture first.
   Windows: should appear in Explorer (untested).
@@ -83,7 +86,8 @@ SAFETY RAILS (automatic)
   Don't edit the "koreader" folder from the computer while sharing.
 
 IF IT DOESN'T WORK
-  - Menu > USB file transfer (MTP) > Status / diagnostics
+  - Menu > USB file transfer (MTP) > Status / diagnostics (state, the end
+    of both logs, and what arrived last time)
   - Logs, in koreader/plugins/usbmtp.koplugin/mtp/ (read them after exiting
     KOReader): mtp.log and umtprd-last.log
   - Linux computer: run the project's tools/host-check.sh with the Kindle

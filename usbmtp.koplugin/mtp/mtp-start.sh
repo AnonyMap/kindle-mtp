@@ -167,6 +167,11 @@ while [ ! -e "${FFS_MNT}/ep1" ] && [ ${i} -lt 40 ]; do
 done
 [ -e "${FFS_MNT}/ep1" ] || fail "umtprd never set up its USB endpoints"
 
+# Anything in documents/ newer than this marker arrived over MTP. (umtprd never
+# applies the computer's timestamps, so received files are always "new".)
+: >"${KMTP_MARK}"
+rm -f "${KMTP_RECEIVED}"
+
 if [ "${MODE}" = "configfs" ]; then
     log "binding gadget to ${UDC_NAME}"
     echo "${UDC_NAME}" >"${GADGET}/UDC" || fail "could not bind gadget to ${UDC_NAME}"

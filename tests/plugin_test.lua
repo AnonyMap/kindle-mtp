@@ -14,7 +14,12 @@ local function runTasks(n) for _=1,(n or 1) do local t = tasks; tasks = {}; for 
 local function widget(kind) return { new = function(_, o) o = o or {}; o.kind = kind; return o end } end
 local settings = {}
 G_reader_settings = { isTrue=function(_,k) return settings[k]==true end,
-  flipNilOrFalse=function(_,k) settings[k] = not settings[k] end, saveSetting=function(_,k,v) settings[k]=v end }
+  flipNilOrFalse=function(_,k) settings[k] = not settings[k] end, saveSetting=function(_,k,v) settings[k]=v end,
+  readSetting=function(_,k) return settings[k] end,
+  nilOrTrue=function(_,k) return settings[k] == nil or settings[k] == true end,
+  flipNilOrTrue=function(_,k) if settings[k] == nil or settings[k] == true then settings[k] = false else settings[k] = nil end end }
+local broadcasts = {}
+function UIManager:broadcastEvent(ev) broadcasts[#broadcasts+1] = ev.name end
 local notes = {}
 local exited = 0
 local Device = { isKindle=function() return true end, exit=function() exited = exited + 1 end }
@@ -217,5 +222,57 @@ check(UIManager.restart_msg and UIManager.restart_msg:find("Updated to v" .. esc
 FakeUpdater.next_install, FakeUpdater.next_install_err = nil, "Checksum mismatch (download corrupted?). Nothing was changed."
 upd.callback(); top().ok_callback()
 check(top().text:find("Update failed. The installed version was not changed.") and top().text:find("Checksum mismatch"), "explains a failed install")
+
+print("== N. what happens when plugged into a computer")
+CtlM = P3._controller
+CtlM.active = false
+settings.usbmtp_on_plug = nil; settings.usbmtp_prompt_on_plug = true
+local plugItem
+for _, it in ipairs(menu_items.usbmtp.sub_item_table) do
+  if it.text_func and it.text_func():find("^When plugged into a computer") then plugItem = it end
+end
+check(plugItem and plugItem.text_func():find("ask first"), "old 'ask' setting carries over")
+settings.usbmtp_on_plug = "auto"; udc("not attached")
+P3:new{ ui = mkui(nil) }  -- an instance to receive the event
+CtlM:onCharging(); runTasks(2); udc("configured"); runTasks()
+check(CtlM.active and top().kind == "ConfirmBox" and top().cancel_text == "Stop", "auto: starts with no prompt")
+fakeProcStat("S"); CtlM:stop()
+settings.usbmtp_on_plug = "off"; udc("not attached"); local n0 = #shown
+CtlM:onCharging(); runTasks(2); udc("configured"); runTasks(20)
+check(not CtlM.active and #shown == n0, "off: does nothing")
+settings.usbmtp_on_plug = nil; settings.usbmtp_prompt_on_plug = nil
+
+print("== O. new books are listed after Stop")
+os.execute("mkdir -p /mnt/base-us/documents/Old.sdr && echo old > /mnt/base-us/documents/Old.epub && touch -d '2 days ago' /mnt/base-us/documents/Old.epub")
+local O = menuItem("Start USB file transfer"); O.callback(); fakeProcStat("S")
+os.execute("sleep 1; mkdir -p '/mnt/base-us/documents/Sci-Fi' && echo new > '/mnt/base-us/documents/Sci-Fi/Dune - Frank Herbert.epub'"
+  .. " && echo meta > /mnt/base-us/documents/Old.sdr/metadata.epub.lua && echo x > /mnt/base-us/documents/.hidden")
+local d = top(); UIManager:close(d); d.cancel_callback()
+check(top().text:find("1 new file%(s%) on the Kindle") and top().text:find("Dune %- Frank Herbert.epub"), "lists the new book")
+check(not top().text:find("Old.epub") and not top().text:find("metadata") and not top().text:find("hidden"), "skips old books, .sdr metadata and dot-files")
+check(top().timeout == nil, "list stays up until dismissed")
+local rf = io.open("/tmp/kmtp-test/plugin/usbmtp.koplugin/mtp/received.txt"):read("*a")
+check(rf:find("^/mnt/us/documents/Sci%-Fi/Dune"), "paths given as /mnt/us (what KOReader uses)")
+O.callback(); fakeProcStat("S"); d = top(); UIManager:close(d); d.cancel_callback()
+check(top().text:find("Safe to unplug") and not top().text:find("new file") and top().timeout == 4, "nothing new: plain message that times out")
+
+print("== P. status-bar marker while sharing")
+local footer_items = {}
+local footer = { addAdditionalFooterContent=function(_, f) footer_items[#footer_items+1] = f end,
+  removeAdditionalFooterContent=function(_, f) for i=#footer_items,1,-1 do if footer_items[i]==f then table.remove(footer_items,i) end end end }
+openBook()
+local readerP = P3:new{ ui = { menu = { registerToMainMenu=function() end }, document = ReaderUI.instance.document, view = { footer = footer } } }
+readerP:onReaderReady()
+check(#footer_items == 0, "no marker when not sharing")
+O.callback(); fakeProcStat("S")
+check(#footer_items == 1 and footer_items[1]() == "ᴍᴛᴘ", "marker shown while sharing")
+d = top(); UIManager:close(d); d.cancel_callback()
+check(#footer_items == 0, "marker removed after Stop (footer settings restored)")
+settings.usbmtp_footer = false
+O.callback(); fakeProcStat("S")
+check(#footer_items == 0, "opt-out respected")
+CtlM:stop(); settings.usbmtp_footer = nil
+readerP:onCloseWidget()
+check(CtlM.reader_plugin == nil, "reader closing clears its reference")
 
 print(string.format("\n%d passed, %d failed", pass, fail))

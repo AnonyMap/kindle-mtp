@@ -9,7 +9,7 @@ daemon for as long as KOReader runs, because stock USB mass storage would unmoun
 KOReader itself lives on (`/mnt/us`). MTP avoids that: files are copied through the mounted
 filesystem, so nothing gets unmounted.
 
-> **Status: v0.5, early but working.** Confirmed on a Kindle 10th gen (FW 5.16.8) with Bazzite
+> **Status: v0.6, early but working.** Confirmed on a Kindle 10th gen (FW 5.16.8) with Bazzite
 > Linux (KDE): copying books from the file manager, and sending books from Calibre (Flatpak
 > 9.17). Everything else is covered by the simulated-Kindle test suite (see [Tests](#tests)) but
 > not yet confirmed on hardware; see [Not yet tested on hardware](#not-yet-tested-on-hardware).
@@ -67,12 +67,18 @@ storage is switched off, and usbmtp exists to fill that gap.
 ## Use
 
 - **Menu:** Tools (wrench) → **USB file transfer (MTP)** → **Start USB file transfer**
-- **On plug-in:** enable *Ask to start when plugged into a computer*. Plugging into a computer
-  then offers to start, on any screen. Wall chargers are ignored.
+- **On plug-in:** set *When plugged into a computer* to **ask first** or **start automatically**
+  (default: do nothing). Works on any screen. Wall chargers are ignored: only a computer that
+  actually connects counts.
 - **Gesture:** Gesture manager → *General* → **Toggle USB file transfer (MTP)**
 
-While sharing, a dialog offers **Stop** or **Hide** (keep reading). It stops by itself when you
-unplug, when the Kindle sleeps, or when KOReader exits.
+While sharing, a dialog offers **Stop** or **Hide** (keep reading). With Hide, a small **ᴍᴛᴘ**
+appears in the reader's status bar while sharing is on; you can turn it off in the menu. Sharing
+stops by itself when you unplug, when the Kindle sleeps, or when KOReader exits.
+
+After Stop, it lists the books that arrived, e.g. "2 new file(s) on the Kindle: …". The list
+covers files that appeared in `documents/` during the session, and leaves out KOReader's own
+`.sdr` metadata.
 
 On the computer:
 - **Linux:** shows up as "Kindle (MTP)" in Dolphin / GNOME Files.
@@ -204,9 +210,13 @@ sh /mnt/us/koreader/plugins/usbmtp.koplugin/mtp/mtp-stop.sh
   - check that the plugin says "USB file transfer is on";
   - check that the cable carries data, not just power;
   - on a Mac, use an MTP app (OpenMTP).
-- **Kindle side:** run **Status / diagnostics** from the plugin menu. Logs are in
-  `koreader/plugins/usbmtp.koplugin/mtp/`: `mtp.log` (the scripts) and `umtprd-last.log` (the
-  MTP program). Read them after exiting KOReader, or over SSH.
+- **Kindle side:** run **Status / diagnostics** from the plugin menu. It shows:
+  - the current state;
+  - the end of both logs;
+  - what arrived in the last session.
+  
+  The full logs are in `koreader/plugins/usbmtp.koplugin/mtp/`: `mtp.log` (the scripts) and
+  `umtprd-last.log` (the MTP program).
 - **Computer side (Linux):** run [`tools/host-check.sh`](tools/host-check.sh) with the Kindle
   plugged in and MTP on. It shows:
   - whether the device is visible;
@@ -306,6 +316,11 @@ If BusyBox is installed, the scripts run under BusyBox ash, as on the device. Th
 - the serial number and version stamping;
 - the Linux 4.1 FunctionFS teardown order (the fake flags the use-after-free ordering);
 - the update flow in the plugin;
+- the list of received books (new files only; old books, `.sdr` metadata and dot-files left
+  out);
+- the three plug-in modes, including migrating the old setting;
+- the status-bar marker coming and going with the session;
+- a luacheck pass, which catches e.g. a function used before it's defined;
 - the updater itself, using KOReader's real unzip and checksum code against fake GitHub
   releases:
   - a good update;

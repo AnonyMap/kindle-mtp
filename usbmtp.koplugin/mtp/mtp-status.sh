@@ -24,5 +24,18 @@ echo
 echo "--- saved state ---"
 cat "${KMTP_STATE}" 2>/dev/null || echo "(none)"
 echo
-echo "--- last 20 lines of umtprd output ---"
-tail -n 20 "${KMTP_DLOG}" 2>/dev/null || echo "(none)"
+if [ -f "${KMTP_DLOG}" ]; then
+    echo "--- umtprd output (current session, last 20 lines) ---"
+    tail -n 20 "${KMTP_DLOG}"
+elif [ -f "${KMTP_SRC}/umtprd-last.log" ]; then
+    echo "--- umtprd output (last session, last 20 lines) ---"
+    tail -n 20 "${KMTP_SRC}/umtprd-last.log"
+fi
+echo
+echo "--- mtp.log (last 25 lines) ---"
+tail -n 25 "${KMTP_LOG}" 2>/dev/null || echo "(none)"
+if [ -s "${KMTP_RECEIVED}" ]; then
+    echo
+    echo "--- received in the last session ---"
+    cat "${KMTP_RECEIVED}"
+fi

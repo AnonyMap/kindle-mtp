@@ -10,6 +10,9 @@ KMTP_PIDFILE="${KMTP_RUN}/umtprd.pid"
 KMTP_WATCHER_PIDFILE="${KMTP_RUN}/watcher.pid"
 KMTP_DLOG="${KMTP_RUN}/umtprd.log"  # daemon output
 KMTP_LOG="${KMTP_SRC}/mtp.log"      # script log, readable from the computer afterwards
+KMTP_MARK="${KMTP_RUN}/session-start" # files newer than this arrived during the session
+KMTP_RECEIVED="${KMTP_SRC}/received.txt" # what arrived in the last session (for the plugin)
+BOOKS_DIR="/mnt/base-us/documents"
 
 EXPECTED_KERNEL="4.1.15-lab126"
 UDC_NAME="ci_hdrc.0"
@@ -117,6 +120,20 @@ gms_exporting() {
         [ -n "$(cat "${_f}" 2>/dev/null)" ] && return 0
     done
     return 1
+}
+
+# After the daemon has stopped: record files that arrived in documents/ during the
+# session, as /mnt/us paths (what KOReader uses). Skips KOReader's own .sdr
+# metadata and dot-files. Writes nothing if there was no session marker.
+list_received() {
+    [ -f "${KMTP_MARK}" ] || return 0
+    [ -d "${BOOKS_DIR}" ] || return 0
+    find "${BOOKS_DIR}" -type f -newer "${KMTP_MARK}" 2>/dev/null |
+        grep -v -e '\.sdr/' -e '/\.' |
+        sed 's#^/mnt/base-us/#/mnt/us/#' >"${KMTP_RECEIVED}.tmp"
+    mv -f "${KMTP_RECEIVED}.tmp" "${KMTP_RECEIVED}"
+    _n="$(wc -l <"${KMTP_RECEIVED}" | tr -d ' ')"
+    log "received ${_n} new file(s) in documents/"
 }
 
 stop_watcher() {

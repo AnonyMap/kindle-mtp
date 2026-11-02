@@ -32,6 +32,7 @@ for f in /usr/sbin/insmod /usr/sbin/rmmod /usr/sbin/modprobe /usr/bin/usleep; do
     [ -e "$f" ] || { touch "$f" && CREATED="${CREATED} $f"; }
 done
 [ -d /lib/modules ] || { mkdir -p /lib/modules && CREATED="${CREATED} /lib/modules"; }
+[ -d /mnt/base-us ] || { mkdir -p /mnt/base-us && CREATED="${CREATED} /mnt/base-us"; }
 cleanup() {
     for f in ${CREATED}; do rm -rf "$f"; done
     rm -rf "${BASE}" /var/tmp/kmtp /dev/ffs-mtp
@@ -76,6 +77,16 @@ expect_not() { # expect_not NAME OUTPUT pattern
         echo "PASS $1"; PASS=$((PASS + 1))
     fi
 }
+
+echo "== static checks"
+if command -v luacheck >/dev/null; then
+    # Catches e.g. a local function used before its definition (it becomes a nil global).
+    o="$(luacheck --no-color --std luajit --globals G_reader_settings --no-unused-args --no-max-line-length --codes \
+        "${REPO}/usbmtp.koplugin/main.lua" "${REPO}/usbmtp.koplugin/usbmtp_updater.lua" "${REPO}/usbmtp.koplugin/_meta.lua" 2>&1)"
+    expect "luacheck (no undefined globals or other warnings)" "$o" "0 warnings / 0 errors"
+else
+    echo "SKIP luacheck (not installed)"
+fi
 
 echo "== shell scripts (BusyBox: ${BB})"
 fresh_plugin; o="$(ns : sh "${H}/scenarios/scripts-cycle.sh")"

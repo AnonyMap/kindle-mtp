@@ -216,8 +216,32 @@ function Ctl:start()
     self.hidden = false
     self:rememberOpenBook()
     self:keepAwake(true)
+    self:updateFooter()
     self:showDialog()
     self:schedulePoll()
+end
+
+-- Files that arrived during the last session (written by mtp-stop.sh).
+function Ctl:receivedFiles()
+    local f = io.open(self.mtp_dir .. "/received.txt", "r")
+    if not f then return {} end
+    local list = {}
+    for line in f:lines() do
+        if line ~= "" then list[#list + 1] = line end
+    end
+    f:close()
+    table.sort(list)
+    return list
+end
+
+local function receivedSummary(list)
+    if #list == 0 then return nil end
+    local lines = { T(_("%1 new file(s) on the Kindle:"), #list) }
+    for i = 1, math.min(#list, 5) do
+        lines[#lines + 1] = "• " .. (list[i]:match("([^/]+)$") or list[i])
+    end
+    if #list > 5 then lines[#lines + 1] = T(_("…and %1 more"), #list - 5) end
+    return table.concat(lines, "\n")
 end
 
 -- quiet: no popups (exit / sleep)
@@ -234,6 +258,7 @@ function Ctl:stop(reason, quiet)
     self.connected = false
     self.hidden = false
     self.book = nil
+    self:updateFooter()
 
     if quiet then return end
 
@@ -248,13 +273,17 @@ function Ctl:stop(reason, quiet)
     local text
     if ok then
         text = (reason and (reason .. "\n\n") or "") .. _("USB file transfer stopped. Safe to unplug.")
+        local summary = receivedSummary(self:receivedFiles())
+        if summary then text = text .. "\n\n" .. summary end
     else
         local err, not_restored = self:lastRunResult()
         text = _("Problem while stopping USB file transfer.") .. "\n\n" .. (err or "") .. "\n\n" ..
                (not_restored and _("Stock USB was not restored. Reboot the Kindle before using USB.")
                               or _("If USB misbehaves, reboot the Kindle."))
     end
-    UIManager:show(InfoMessage:new{ text = text, timeout = ok and 4 or nil })
+    -- Leave a list of new books up until dismissed; a plain "stopped" can time out.
+    local has_new = ok and #self:receivedFiles() > 0
+    UIManager:show(InfoMessage:new{ text = text, timeout = (ok and not has_new) and 4 or nil })
 end
 
 function Ctl:offerStaleCleanup()
@@ -405,8 +434,17 @@ end
 -- few seconds; a wall charger never does. That's how we tell them apart.
 ---------------------------------------------------------------------------
 
+-- What to do when plugged into a computer: "ask", "auto" or "off".
+-- (v0.5 and earlier stored a boolean "usbmtp_prompt_on_plug": true means "ask".)
+local function onPlugMode()
+    local m = G_reader_settings:readSetting("usbmtp_on_plug")
+    if m == "ask" or m == "auto" or m == "off" then return m end
+    return G_reader_settings:isTrue("usbmtp_prompt_on_plug") and "ask" or "off"
+end
+
 function Ctl:onCharging()
-    if not G_reader_settings:isTrue("usbmtp_prompt_on_plug") then return end
+    local mode = onPlugMode()
+    if mode == "off" then return end
     if self.active or self._probing then return end
     self._probing = true
     local tries = 0
@@ -418,6 +456,10 @@ function Ctl:onCharging()
         end
         if udcState() == "configured" then
             self._probing = false
+            if mode == "auto" then
+                self:start()
+                return
+            end
             UIManager:show(ConfirmBox:new{
                 text = _("Computer detected.\n\nStart USB file transfer (MTP)?"),
                 ok_text = _("Start"),
@@ -455,6 +497,30 @@ function Ctl:onResume()
 end
 
 ---------------------------------------------------------------------------
+-- Status-bar marker in the reader while sharing (opt-out). Registered only while
+-- a session is on: adding footer content flips a persistent footer setting, and
+-- removing the last item flips it back, so the user's footer is left as it was.
+---------------------------------------------------------------------------
+
+local FOOTER_TEXT = "ᴍᴛᴘ" -- small caps, like the SSH plugin's marker
+
+function Ctl:updateFooter()
+    local p = self.reader_plugin
+    local footer = p and p.ui and p.ui.view and p.ui.view.footer
+    if not footer then return end
+    local want = self.active and G_reader_settings:nilOrTrue("usbmtp_footer")
+    if want and not p.footer_added then
+        footer:addAdditionalFooterContent(p.footer_func)
+        p.footer_added = true
+    elseif not want and p.footer_added then
+        footer:removeAdditionalFooterContent(p.footer_func)
+        p.footer_added = false
+        UIManager:broadcastEvent(Event:new("UpdateFooter", true))
+    end
+    UIManager:broadcastEvent(Event:new("RefreshAdditionalContent"))
+end
+
+---------------------------------------------------------------------------
 -- Plugin instances (one in the file browser, one per open book): thin wrappers
 ---------------------------------------------------------------------------
 
@@ -477,6 +543,11 @@ function UsbMtp:init()
     self.ui.menu:registerToMainMenu(self)
     self:onDispatcherRegisterActions()
 
+    if self.ui.view and self.ui.view.footer then -- a reader, not the file browser
+        self.footer_func = function() return Ctl.active and FOOTER_TEXT or nil end
+        Ctl.reader_plugin = self
+    end
+
     -- After a crash, a session may still be running with nobody owning it.
     if not Ctl.stale_checked then
         Ctl.stale_checked = true
@@ -493,7 +564,19 @@ function UsbMtp:onNotCharging() Ctl:onNotCharging() end
 function UsbMtp:onSuspend() Ctl:onSuspend() end
 function UsbMtp:onResume() Ctl:onResume() end
 
+function UsbMtp:onCloseWidget()
+    if Ctl.reader_plugin == self then
+        if self.footer_added and self.ui.view and self.ui.view.footer then
+            self.ui.view.footer:removeAdditionalFooterContent(self.footer_func)
+        end
+        self.footer_added = false
+        Ctl.reader_plugin = nil
+    end
+end
+
 function UsbMtp:onReaderReady()
+    Ctl.reader_plugin = self
+    Ctl:updateFooter()
     -- A book opened while sharing: re-show the dialog unless the user hid it,
     -- since the new reader screen is drawn on top of it.
     if Ctl.active then
@@ -603,10 +686,39 @@ function UsbMtp:addToMainMenu(menu_items)
                 end,
             },
             {
-                text = _("Ask to start when plugged into a computer"),
-                help_text = _("When the cable is connected to a computer (not a wall charger), offer to start USB file transfer. Works on any screen, including inside a book."),
-                checked_func = function() return G_reader_settings:isTrue("usbmtp_prompt_on_plug") end,
-                callback = function() G_reader_settings:flipNilOrFalse("usbmtp_prompt_on_plug") end,
+                text_func = function()
+                    local labels = { ask = _("ask first"), auto = _("start automatically"), off = _("do nothing") }
+                    return T(_("When plugged into a computer: %1"), labels[onPlugMode()])
+                end,
+                help_text = _("Wall chargers are ignored: only a computer that actually connects counts. Works on any screen, including inside a book."),
+                sub_item_table = {
+                    {
+                        text = _("Ask first"),
+                        radio = true,
+                        checked_func = function() return onPlugMode() == "ask" end,
+                        callback = function() G_reader_settings:saveSetting("usbmtp_on_plug", "ask") end,
+                    },
+                    {
+                        text = _("Start automatically"),
+                        radio = true,
+                        checked_func = function() return onPlugMode() == "auto" end,
+                        callback = function() G_reader_settings:saveSetting("usbmtp_on_plug", "auto") end,
+                    },
+                    {
+                        text = _("Do nothing"),
+                        radio = true,
+                        checked_func = function() return onPlugMode() == "off" end,
+                        callback = function() G_reader_settings:saveSetting("usbmtp_on_plug", "off") end,
+                    },
+                },
+            },
+            {
+                text = T(_("Show %1 in the reader's status bar while sharing"), FOOTER_TEXT),
+                checked_func = function() return G_reader_settings:nilOrTrue("usbmtp_footer") end,
+                callback = function()
+                    G_reader_settings:flipNilOrTrue("usbmtp_footer")
+                    Ctl:updateFooter()
+                end,
             },
             {
                 text = _("Check for updates"),
