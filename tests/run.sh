@@ -40,6 +40,8 @@ cleanup() {
 trap cleanup EXIT
 
 rm -rf "${BASE}"; mkdir -p "${H}/realbin"
+# Everything below must leave the repo untouched (checked at the end).
+STAMP="$(mktemp)"
 cp -r "${REPO}/tests/." "${H}/"
 for b in mkdir rmdir mount umount; do cp "$(command -v $b)" "${H}/realbin/"; done
 chmod +x "${H}"/stubs/* "${H}"/*.sh
@@ -144,6 +146,14 @@ if [ -n "${KBASE}" ] && [ -f "${KBASE}/ffi/archiver.lua" ] && command -v zip >/d
 else
     echo "SKIP updater scenarios (set KOREADER_BASE to a koreader-base checkout; needs zip, lua-dkjson, lua-filesystem, libarchive13)"
 fi
+
+echo "== hygiene"
+# The suite runs as root: anything it wrote into the repo would be root-owned and
+# break later non-root steps (this broke the v0.6 release build).
+o="$(find "${REPO}" -path "${REPO}/.git" -prune -o -newer "${STAMP}" -print 2>/dev/null)"
+rm -f "${STAMP}"
+if [ -z "${o}" ]; then echo "PASS tests leave the repo untouched"; PASS=$((PASS + 1))
+else echo "FAIL tests wrote into the repo:"; printf '%s\n' "${o}" | sed 's/^/    /'; FAIL=$((FAIL + 1)); fi
 
 echo
 echo "${PASS} passed, ${FAIL} failed"

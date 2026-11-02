@@ -243,11 +243,13 @@ check(cut == string.rep("a", 9) .. "…", "notes cut at a UTF-8 boundary: " .. c
 
 print("== release zip built by tools/make-release.sh installs cleanly")
 fresh_install("0.3")
-sh(string.format("cd '%s' && sh tools/make-release.sh >/dev/null", REPO))
+-- Build into the scratch dir, never the repo (the suite runs as root; a root-owned
+-- dist/ broke the v0.6 release build).
+sh(string.format("cd '%s' && DIST_DIR='%s/dist' sh tools/make-release.sh >/dev/null", REPO, W))
 local v = (read(REPO .. "/usbmtp.koplugin/mtp/VERSION") or ""):gsub("%s", "")
 local zname = "usbmtp.koplugin-v" .. v .. ".zip"
-served["https://dl/" .. zname] = REPO .. "/dist/" .. zname
-served["https://dl/SHA256SUMS"] = REPO .. "/dist/SHA256SUMS"
+served["https://dl/" .. zname] = W .. "/dist/" .. zname
+served["https://dl/SHA256SUMS"] = W .. "/dist/SHA256SUMS"
 release("v" .. v, { { zname, "https://dl/" .. zname }, { "SHA256SUMS", "https://dl/SHA256SUMS" } })
 info = Updater.check("0.3", WORK)
 ok, ierr = Updater.install(info, ROOT, WORK)
