@@ -15,8 +15,10 @@ echo "not attached" >/sys/class/udc/ci_hdrc.0/state
 P=/sys/module/g_mass_storage/parameters
 echo ""  >$P/file; echo "Y" >$P/removable; echo 1 >$P/luns; echo 6473 >$P/idVendor; echo 4 >$P/idProduct
 echo "N" >$P/stall; echo "N" >$P/ro; echo "(null)" >$P/iSerialNumber; echo "," >$P/cdrom
+echo "Amazon Kindle" >$P/iProduct
 # fake modules dir
 mount -t tmpfs none /lib/modules
+mount -t tmpfs none /mnt/base-us && mkdir -p /mnt/base-us/documents
 D=/lib/modules/4.1.15-lab126/kernel/drivers/usb/gadget
 mkdir -p $D/function $D/legacy; touch $D/function/usb_f_fs.ko $D/legacy/g_ffs.ko $D/legacy/g_mass_storage.ko $D/libcomposite.ko
 # scenario tweaks

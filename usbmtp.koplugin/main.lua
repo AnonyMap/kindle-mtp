@@ -30,8 +30,8 @@ local UIManager = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local DataStorage = require("datastorage")
 local NetworkMgr = require("ui/network/manager")
--- Must be required while the plugin loads: KOReader only puts the plugin folder on
--- package.path during loading. Distinct name, since loaded modules are shared by all plugins.
+-- Distinct module name: package.loaded is shared by every plugin, so a generic
+-- name like "updater" could collide with another plugin's module.
 local Updater = require("usbmtp_updater")
 local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
@@ -46,6 +46,7 @@ local STATE_FILE = "/var/tmp/kmtp/state"
 local PID_FILE = "/var/tmp/kmtp/umtprd.pid"
 local UDC_STATE = "/sys/class/udc/ci_hdrc.0/state"
 local POLL_SECS = 2
+local NO_HOST_TIMEOUT = 600 -- seconds without a computer before giving up (keeps the Kindle from never sleeping)
 
 local function readFirstLine(path)
     local f = io.open(path, "r")
@@ -183,6 +184,12 @@ function Ctl:start()
         self:showDialog()
         return
     end
+    if self.update_pending then
+        UIManager:show(InfoMessage:new{
+            text = T(_("Restart KOReader to finish updating to v%1 first."), self.update_pending),
+        })
+        return
+    end
     if fileExists(STATE_FILE) then
         self:offerStaleCleanup()
         return
@@ -212,12 +219,38 @@ function Ctl:start()
 
     self.active = true
     self.connected = false
+    self.cable_seen = false
+    self.started_at = os.time()
     self.lost_polls = 0
     self.hidden = false
     self:rememberOpenBook()
     self:keepAwake(true)
+    self:updateFooter()
     self:showDialog()
     self:schedulePoll()
+end
+
+-- Files that arrived during the last session (written by mtp-stop.sh).
+function Ctl:receivedFiles()
+    local f = io.open(self.mtp_dir .. "/received.txt", "r")
+    if not f then return {} end
+    local list = {}
+    for line in f:lines() do
+        if line ~= "" then list[#list + 1] = line end
+    end
+    f:close()
+    table.sort(list)
+    return list
+end
+
+local function receivedSummary(list)
+    if #list == 0 then return nil end
+    local lines = { T(_("%1 new file(s) on the Kindle:"), #list) }
+    for i = 1, math.min(#list, 5) do
+        lines[#lines + 1] = "• " .. (list[i]:match("([^/]+)$") or list[i])
+    end
+    if #list > 5 then lines[#lines + 1] = T(_("…and %1 more"), #list - 5) end
+    return table.concat(lines, "\n")
 end
 
 -- quiet: no popups (exit / sleep)
@@ -234,8 +267,9 @@ function Ctl:stop(reason, quiet)
     self.connected = false
     self.hidden = false
     self.book = nil
+    self:updateFooter()
 
-    if quiet then return end
+    if quiet then return ok end
 
     local FileManager = package.loaded["apps/filemanager/filemanager"]
     if FileManager and FileManager.instance then
@@ -248,13 +282,18 @@ function Ctl:stop(reason, quiet)
     local text
     if ok then
         text = (reason and (reason .. "\n\n") or "") .. _("USB file transfer stopped. Safe to unplug.")
+        local summary = receivedSummary(self:receivedFiles())
+        if summary then text = text .. "\n\n" .. summary end
     else
         local err, not_restored = self:lastRunResult()
         text = _("Problem while stopping USB file transfer.") .. "\n\n" .. (err or "") .. "\n\n" ..
                (not_restored and _("Stock USB was not restored. Reboot the Kindle before using USB.")
                               or _("If USB misbehaves, reboot the Kindle."))
     end
-    UIManager:show(InfoMessage:new{ text = text, timeout = ok and 4 or nil })
+    -- Leave a list of new books up until dismissed; a plain "stopped" can time out.
+    local has_new = ok and #self:receivedFiles() > 0
+    UIManager:show(InfoMessage:new{ text = text, timeout = (ok and not has_new) and 4 or nil })
+    return ok
 end
 
 function Ctl:offerStaleCleanup()
@@ -385,14 +424,23 @@ function Ctl:poll()
                 notify(_("Computer connected over USB."))
             end
         end
-    elseif self.connected and st == "not attached" then
+    elseif (self.connected or self.cable_seen) and st == "not attached" then
         -- Only VBUS loss means unplugged. "suspended" (computer asleep) and the
         -- default/addressed states seen while a host re-enumerates are not.
+        -- Also applies when a cable was in but no computer ever connected
+        -- (e.g. a Mac with no MTP app), so the Kindle can sleep again.
         self.lost_polls = self.lost_polls + 1
         if self.lost_polls >= 2 then
             self:stop(_("The cable was unplugged."))
             return
         end
+    end
+    if st ~= "not attached" and st ~= "unknown" then
+        self.cable_seen = true
+    end
+    if not self.connected and os.time() - (self.started_at or os.time()) > NO_HOST_TIMEOUT then
+        self:stop(T(_("No computer connected within %1 minutes."), math.floor(NO_HOST_TIMEOUT / 60)))
+        return
     end
 
     self:checkOpenBook()
@@ -405,8 +453,17 @@ end
 -- few seconds; a wall charger never does. That's how we tell them apart.
 ---------------------------------------------------------------------------
 
+-- What to do when plugged into a computer: "ask", "auto" or "off".
+-- (v0.5 and earlier stored a boolean "usbmtp_prompt_on_plug": true means "ask".)
+local function onPlugMode()
+    local m = G_reader_settings:readSetting("usbmtp_on_plug")
+    if m == "ask" or m == "auto" or m == "off" then return m end
+    return G_reader_settings:isTrue("usbmtp_prompt_on_plug") and "ask" or "off"
+end
+
 function Ctl:onCharging()
-    if not G_reader_settings:isTrue("usbmtp_prompt_on_plug") then return end
+    local mode = onPlugMode()
+    if mode == "off" then return end
     if self.active or self._probing then return end
     self._probing = true
     local tries = 0
@@ -418,6 +475,10 @@ function Ctl:onCharging()
         end
         if udcState() == "configured" then
             self._probing = false
+            if mode == "auto" then
+                self:start()
+                return
+            end
             UIManager:show(ConfirmBox:new{
                 text = _("Computer detected.\n\nStart USB file transfer (MTP)?"),
                 ok_text = _("Start"),
@@ -440,7 +501,7 @@ end
 
 function Ctl:onSuspend()
     if self.active then
-        self:stop(nil, true)
+        self.sleep_stop_ok = self:stop(nil, true)
         self.stopped_by_sleep = true
     end
 end
@@ -448,10 +509,47 @@ end
 function Ctl:onResume()
     if self.stopped_by_sleep then
         self.stopped_by_sleep = false
+        local ok = self.sleep_stop_ok
         UIManager:scheduleIn(1, function()
-            UIManager:show(InfoMessage:new{ text = _("USB file transfer was stopped because the Kindle went to sleep.\n\nIf a file was being copied at that moment, copy it again."), timeout = 5 })
+            local FileManager = package.loaded["apps/filemanager/filemanager"]
+            if FileManager and FileManager.instance then FileManager.instance:onRefresh() end
+            local text = _("USB file transfer was stopped because the Kindle went to sleep.\n\nIf a file was being copied at that moment, copy it again.")
+            if ok then
+                local summary = receivedSummary(self:receivedFiles())
+                if summary then text = text .. "\n\n" .. summary end
+            else
+                local err, not_restored = self:lastRunResult()
+                text = text .. "\n\n" .. _("Stopping didn't go cleanly:") .. " " .. (err or "") .. "\n" ..
+                       (not_restored and _("Stock USB was not restored. Reboot the Kindle before using USB.")
+                                      or _("If USB misbehaves, reboot the Kindle."))
+            end
+            UIManager:show(InfoMessage:new{ text = text, timeout = ok and 8 or nil })
         end)
     end
+end
+
+---------------------------------------------------------------------------
+-- Status-bar marker in the reader while sharing (opt-out). Registered only while
+-- a session is on: adding footer content flips a persistent footer setting, and
+-- removing the last item flips it back, so the user's footer is left as it was.
+---------------------------------------------------------------------------
+
+local FOOTER_TEXT = "ᴍᴛᴘ" -- small caps, like the SSH plugin's marker
+
+function Ctl:updateFooter()
+    local p = self.reader_plugin
+    local footer = p and p.ui and p.ui.view and p.ui.view.footer
+    if not footer then return end
+    local want = self.active and G_reader_settings:nilOrTrue("usbmtp_footer")
+    if want and not p.footer_added then
+        footer:addAdditionalFooterContent(p.footer_func)
+        p.footer_added = true
+    elseif not want and p.footer_added then
+        footer:removeAdditionalFooterContent(p.footer_func)
+        p.footer_added = false
+        UIManager:broadcastEvent(Event:new("UpdateFooter", true))
+    end
+    UIManager:broadcastEvent(Event:new("RefreshAdditionalContent"))
 end
 
 ---------------------------------------------------------------------------
@@ -471,11 +569,18 @@ function UsbMtp:init()
         end
         Ctl.mtp_dir = root .. "/mtp"
         Ctl.version = readFirstLine(Ctl.mtp_dir .. "/VERSION") or "?"
+        -- We loaded, so any update that just happened worked: drop the backup.
+        pcall(Updater.cleanupAfterUpdate, root)
     end
     Ctl:hookExit()
 
     self.ui.menu:registerToMainMenu(self)
     self:onDispatcherRegisterActions()
+
+    if self.ui.view and self.ui.view.footer then -- a reader, not the file browser
+        self.footer_func = function() return Ctl.active and FOOTER_TEXT or nil end
+        Ctl.reader_plugin = self
+    end
 
     -- After a crash, a session may still be running with nobody owning it.
     if not Ctl.stale_checked then
@@ -493,7 +598,19 @@ function UsbMtp:onNotCharging() Ctl:onNotCharging() end
 function UsbMtp:onSuspend() Ctl:onSuspend() end
 function UsbMtp:onResume() Ctl:onResume() end
 
+function UsbMtp:onCloseWidget()
+    if Ctl.reader_plugin == self then
+        if self.footer_added and self.ui.view and self.ui.view.footer then
+            self.ui.view.footer:removeAdditionalFooterContent(self.footer_func)
+        end
+        self.footer_added = false
+        Ctl.reader_plugin = nil
+    end
+end
+
 function UsbMtp:onReaderReady()
+    Ctl.reader_plugin = self
+    Ctl:updateFooter()
     -- A book opened while sharing: re-show the dialog unless the user hid it,
     -- since the new reader screen is drawn on top of it.
     if Ctl.active then
@@ -531,8 +648,17 @@ local function updateWorkDir()
     return DataStorage:getDataDir() .. "/cache/usbmtp-update"
 end
 
+-- A session we didn't start (SSH/KUAL, or left over from a crash) also counts.
+local function anySessionRunning()
+    return Ctl.active or fileExists(STATE_FILE) or daemonAlive()
+end
+
 function UsbMtp:checkForUpdates()
-    if Ctl.active then
+    if Ctl.update_pending then
+        self:offerRestart()
+        return
+    end
+    if anySessionRunning() then
         UIManager:show(InfoMessage:new{ text = _("Stop the USB file transfer first, then check for updates.") })
         return
     end
@@ -540,6 +666,9 @@ function UsbMtp:checkForUpdates()
         local busy = showBusy(_("Checking GitHub for updates…"))
         local info, err = Updater.check(Ctl.version, updateWorkDir())
         UIManager:close(busy)
+        if not info or not info.newer then
+            NetworkMgr:afterWifiAction() -- turn Wi-Fi back off if we turned it on (user's setting)
+        end
         if not info then
             UIManager:show(InfoMessage:new{ icon = "notice-warning", text = err })
             return
@@ -550,35 +679,51 @@ function UsbMtp:checkForUpdates()
             })
             return
         end
-        local notes = info.notes:gsub("\r", "")
-        if #notes > 700 then notes = notes:sub(1, 700) .. "…" end
+        local notes = Updater.shortNotes(info.notes, 700)
         UIManager:show(ConfirmBox:new{
             text = T(_("Version %1 is available (you have %2)."), info.version, Ctl.version) ..
                    (notes ~= "" and ("\n\n" .. notes) or "") ..
                    "\n\n" .. _("Install it? KOReader will need to restart."),
             ok_text = _("Install"),
+            flush_events_on_show = true, -- taps made while checking mustn't press Install
             ok_callback = function() self:installUpdate(info) end,
+            cancel_callback = function() NetworkMgr:afterWifiAction() end,
         })
     end)
 end
 
 function UsbMtp:installUpdate(info)
-    if Ctl.active then
+    if anySessionRunning() then
         UIManager:show(InfoMessage:new{ text = _("Stop the USB file transfer first.") })
+        NetworkMgr:afterWifiAction()
         return
     end
     local root = Ctl.mtp_dir:match("^(.*)/mtp$")
     local busy = showBusy(T(_("Downloading and installing v%1…"), info.version))
     local ok, err = Updater.install(info, root, updateWorkDir())
     UIManager:close(busy)
+    NetworkMgr:afterWifiAction()
     if not ok then
         UIManager:show(InfoMessage:new{
             icon = "notice-warning",
-            text = _("Update failed. The installed version was not changed.") .. "\n\n" .. tostring(err),
+            text = _("Update failed.") .. "\n\n" .. tostring(err),
         })
         return
     end
-    UIManager:askForRestart(T(_("Updated to v%1. Restart KOReader now to use it?"), info.version))
+    -- The code running now is the old version, but the scripts on disk are new:
+    -- don't let them mix. Starting a transfer waits for the restart.
+    Ctl.update_pending = info.version
+    self:offerRestart()
+end
+
+function UsbMtp:offerRestart()
+    UIManager:show(ConfirmBox:new{
+        text = T(_("Updated to v%1. Restart KOReader to finish the update.\n\nUntil then, USB file transfer is unavailable."), Ctl.update_pending),
+        ok_text = _("Restart now"),
+        cancel_text = _("Later"),
+        flush_events_on_show = true,
+        ok_callback = function() UIManager:restartKOReader() end,
+    })
 end
 
 function UsbMtp:showStatus()
@@ -603,10 +748,39 @@ function UsbMtp:addToMainMenu(menu_items)
                 end,
             },
             {
-                text = _("Ask to start when plugged into a computer"),
-                help_text = _("When the cable is connected to a computer (not a wall charger), offer to start USB file transfer. Works on any screen, including inside a book."),
-                checked_func = function() return G_reader_settings:isTrue("usbmtp_prompt_on_plug") end,
-                callback = function() G_reader_settings:flipNilOrFalse("usbmtp_prompt_on_plug") end,
+                text_func = function()
+                    local labels = { ask = _("ask first"), auto = _("start automatically"), off = _("do nothing") }
+                    return T(_("When plugged into a computer: %1"), labels[onPlugMode()])
+                end,
+                help_text = _("Wall chargers are ignored: only a computer that actually connects counts. Works on any screen, including inside a book."),
+                sub_item_table = {
+                    {
+                        text = _("Ask first"),
+                        radio = true,
+                        checked_func = function() return onPlugMode() == "ask" end,
+                        callback = function() G_reader_settings:saveSetting("usbmtp_on_plug", "ask") end,
+                    },
+                    {
+                        text = _("Start automatically"),
+                        radio = true,
+                        checked_func = function() return onPlugMode() == "auto" end,
+                        callback = function() G_reader_settings:saveSetting("usbmtp_on_plug", "auto") end,
+                    },
+                    {
+                        text = _("Do nothing"),
+                        radio = true,
+                        checked_func = function() return onPlugMode() == "off" end,
+                        callback = function() G_reader_settings:saveSetting("usbmtp_on_plug", "off") end,
+                    },
+                },
+            },
+            {
+                text = T(_("Show %1 in the reader's status bar while sharing"), FOOTER_TEXT),
+                checked_func = function() return G_reader_settings:nilOrTrue("usbmtp_footer") end,
+                callback = function()
+                    G_reader_settings:flipNilOrTrue("usbmtp_footer")
+                    Ctl:updateFooter()
+                end,
             },
             {
                 text = _("Check for updates"),

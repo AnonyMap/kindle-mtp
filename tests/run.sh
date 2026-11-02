@@ -32,6 +32,7 @@ for f in /usr/sbin/insmod /usr/sbin/rmmod /usr/sbin/modprobe /usr/bin/usleep; do
     [ -e "$f" ] || { touch "$f" && CREATED="${CREATED} $f"; }
 done
 [ -d /lib/modules ] || { mkdir -p /lib/modules && CREATED="${CREATED} /lib/modules"; }
+[ -d /mnt/base-us ] || { mkdir -p /mnt/base-us && CREATED="${CREATED} /mnt/base-us"; }
 cleanup() {
     for f in ${CREATED}; do rm -rf "$f"; done
     rm -rf "${BASE}" /var/tmp/kmtp /dev/ffs-mtp
@@ -77,13 +78,29 @@ expect_not() { # expect_not NAME OUTPUT pattern
     fi
 }
 
+echo "== static checks"
+if command -v luacheck >/dev/null; then
+    # Catches e.g. a local function used before its definition (it becomes a nil global).
+    o="$(luacheck --no-color --std luajit --globals G_reader_settings --no-unused-args --no-max-line-length --codes \
+        "${REPO}/usbmtp.koplugin/main.lua" "${REPO}/usbmtp.koplugin/usbmtp_updater.lua" "${REPO}/usbmtp.koplugin/_meta.lua" 2>&1)"
+    expect "luacheck (no undefined globals or other warnings)" "$o" "0 warnings / 0 errors"
+else
+    echo "SKIP luacheck (not installed)"
+fi
+
 echo "== shell scripts (BusyBox: ${BB})"
 fresh_plugin; o="$(ns : sh "${H}/scenarios/scripts-cycle.sh")"
 expect "start/stop cycle (configfs)" "$o" "MTP is ON (mode: configfs" "MTP is OFF. Safe to unplug." "^g_mass_storage 1000" "MTP is not active. Nothing to do."
 expect_not "teardown order safe for Linux 4.1 FunctionFS" "$o" "ORDER-VIOLATION"
+expect "stock driver restored with exact settings (incl. a value with spaces)" "$o" 'insmod <.*/g_mass_storage.ko> .*<iProduct="Amazon Kindle">' '<removable=Y>'
+
 V="$(tr -d ' \n' < "${REPO}/usbmtp.koplugin/mtp/VERSION")"
 expect "version stamped and shown" "$o" "version in umtprd.conf: firmware_version \"usbmtp ${V}\"" "^version: *${V}" "USB serial: *G000AB12CD34EF56"
 expect "reports the Kindle's own serial" "$o" 'serial in umtprd.conf: serial "G000AB12CD34EF56"' "serial in gadget: G000AB12CD34EF56"
+fresh_plugin; o="$(ns : sh -c "sh ${PLUG}/usbmtp.koplugin/mtp/mtp-start.sh >/dev/null; sed -i '/^GMS_PARAM=/d' /var/tmp/kmtp/state; echo 'GMS_PARAMS=idVendor=6473 removable=Y' >> /var/tmp/kmtp/state; sh ${PLUG}/usbmtp.koplugin/mtp/mtp-stop.sh; cat /tmp/kmtp-test/fake/argv")"
+expect "restores state saved by v0.5 (old one-line format)" "$o" "MTP is OFF" 'insmod <.*/g_mass_storage.ko> <idVendor=6473> <removable=Y>'
+fresh_plugin; o="$(ns 'echo "g_ether 1 0 - Live 0x0" >> $F/proc/modules; sed -i "/^g_mass_storage /d" $F/proc/modules' sh "${PLUG}/usbmtp.koplugin/mtp/mtp-stop.sh")"
+expect "Reset leaves USBNetwork alone" "$o" "MTP is not active. Nothing to do."
 fresh_plugin; o="$(ns : sh "${H}/scenarios/scripts-watcher.sh")"
 expect "crash watcher stops MTP when KOReader dies" "$o" "MTP is ON" "watcher: process" "state: gone" "modules:.*g_mass_storage"
 

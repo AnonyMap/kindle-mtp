@@ -28,10 +28,11 @@ jobs:
     steps:
       - name: Validate tag name
         run: |
-          case "$TAG" in
-            v[0-9]*) ;;
-            *) echo "Not a version tag: $TAG"; exit 1 ;;
-          esac
+          # Plain numeric versions only (v0.6, v1.2.3): the plugin's updater
+          # can't install anything else, e.g. v1.0-rc1.
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+(\.[0-9]+)*$'; then
+            echo "Not a plain version tag: $TAG"; exit 1
+          fi
 
       - uses: actions/checkout@v5
         with:
@@ -44,8 +45,17 @@ jobs:
             echo "Tag $TAG does not match VERSION $v"; exit 1
           fi
 
+      - name: Install test dependencies
+        run: sh .github/actions-test-deps.sh
+
+      - name: Run tests (a release that fails them is never published)
+        run: sudo --preserve-env=KOREADER_BASE sh tests/run.sh
+
       - name: Build assets
         run: sh tools/make-release.sh
+
+      - name: Check the built zip the way the updater will
+        run: luajit tests/check_release_zip.lua dist "$KOREADER_BASE"
 
       - name: Create release, or attach assets to the existing one
         env:

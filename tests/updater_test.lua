@@ -27,13 +27,16 @@ local pass, fail = 0, 0
 local function check(c, m) if c then pass = pass + 1 else fail = fail + 1 end print((c and "PASS " or "FAIL ") .. m) end
 
 -- Fake GitHub: URL -> local file
+-- served[url] = local file path, or { code = 404 } for an HTTP error. Unknown URL = no network.
 local served = {}
 Updater.download = function(url, path)
     local src = served[url]
-    if not src then return nil, "HTTP 404" end
+    if src == nil then return nil, "timeout" end
+    if type(src) == "table" then return nil, "HTTP " .. src.code, src.code end
     sh(string.format("cp '%s' '%s'", src, path))
     return true
 end
+Updater.sync = function() end
 
 local API = "https://api.github.com/repos/AnonyMap/usbmtp/releases/latest"
 local function release(tag, assets, body)
@@ -87,7 +90,9 @@ local ok, ierr = Updater.install(info, ROOT, WORK)
 check(ok, "install succeeds " .. tostring(ierr))
 check(installed_version() == "0.5" and exists(ROOT .. "/NEW_IN_0.5"), "new version is in place")
 check(exists(ROOT .. "/mtp/bin/umtprd") and exists(ROOT .. "/usbmtp_updater.lua"), "binary and updater came along")
-check(no_leftovers(), "no .new/.old folders left behind")
+check(not exists(ROOT .. ".new") and exists(ROOT .. ".old/mtp/VERSION"), "previous version kept as .old until the new one loads")
+Updater.cleanupAfterUpdate(ROOT)
+check(no_leftovers(), "cleanupAfterUpdate removes the backup")
 check(not exists(WORK .. "/usbmtp.koplugin-v0.5.zip"), "download cleaned up")
 
 print("== already up to date")
@@ -129,12 +134,21 @@ print("== release without assets / no release yet")
 release("v0.5", {})
 info, err = Updater.check("0.4", WORK)
 check(not info and err:find("missing its plugin zip"), "explains: " .. tostring(err))
-write(W .. "/srv/latest.json", '{"message":"Not Found"}')
+served[API] = { code = 404 } -- what GitHub really answers when there are no releases
 info, err = Updater.check("0.4", WORK)
-check(not info and err:find("no published release"), "explains: " .. tostring(err))
+check(not info and err:find("No release has been published"), "no release: " .. tostring(err))
+served[API] = { code = 403 }
+info, err = Updater.check("0.4", WORK)
+check(not info and err:find("rate limit"), "rate limited: " .. tostring(err))
 served[API] = nil
 info, err = Updater.check("0.4", WORK)
-check(not info and err:find("Could not reach GitHub"), "offline: " .. tostring(err))
+check(not info and err:find("Could not reach GitHub") and err:find("Wi%-Fi"), "offline: " .. tostring(err))
+write(W .. "/srv/latest.json", '{"message":"weird"}'); served[API] = W .. "/srv/latest.json"
+info, err = Updater.check("0.4", WORK)
+check(not info and err:find("doesn't understand"), "unexpected reply: " .. tostring(err))
+release("v1.0-rc1", {})
+info, err = Updater.check("0.4", WORK)
+check(not info and err:find("plain version number"), "non-numeric tag: " .. tostring(err))
 
 print("== swap fails halfway: rolls back")
 fresh_install("0.4")
@@ -149,8 +163,83 @@ os.rename = function(a, b)
 end
 ok, ierr = Updater.install(info, ROOT, WORK)
 os.rename = real_rename
-check(not ok and ierr:find("kept the current one"), "reports: " .. tostring(ierr))
-check(installed_version() == "0.4" and no_leftovers(), "original copy restored, nothing left over")
+check(not ok and ierr:find("Kept the current version"), "reports: " .. tostring(ierr))
+check(installed_version() == "0.4" and not exists(ROOT .. ".new"), "original copy restored")
+
+print("== swap fails halfway AND the undo fails: says where the old copy is")
+fresh_install("0.4")
+info = Updater.check("0.4", WORK)
+calls = 0
+os.rename = function(a, b)
+    calls = calls + 1
+    if calls >= 2 then return nil, "simulated failure" end
+    return real_rename(a, b)
+end
+ok, ierr = Updater.install(info, ROOT, WORK)
+os.rename = real_rename
+check(not ok and ierr:find("previous version is now at") and ierr:find("usbmtp.koplugin.old", 1, true), "tells the user the folder to rename back")
+check(exists(ROOT .. ".old/mtp/VERSION"), "previous version still intact at .old")
+
+local GOOD = { { "usbmtp.koplugin-v0.5.zip", "https://dl/usbmtp.koplugin-v0.5.zip" }, { "SHA256SUMS", "https://dl/SHA256SUMS" } }
+local function try_broken(label, tweak, expect_pat)
+    fresh_install("0.4")
+    build_zip("0.5", "usbmtp.koplugin-v0.5.zip", tweak)
+    release("v0.5", GOOD)
+    local i = Updater.check("0.4", WORK)
+    local okk, e = Updater.install(i, ROOT, WORK)
+    check(not okk and tostring(e):find(expect_pat), label .. ": " .. tostring(e))
+    check(installed_version() == "0.4" and not exists(ROOT .. ".new"), label .. ": installed copy untouched")
+end
+
+print("== broken releases are refused")
+try_broken("missing the updater itself", function(b) os.remove(b .. "/usbmtp.koplugin/usbmtp_updater.lua") end, "missing usbmtp_updater.lua")
+try_broken("missing the MTP program", function(b) os.remove(b .. "/usbmtp.koplugin/mtp/bin/umtprd") end, "missing mtp/bin/umtprd")
+try_broken("missing common.sh", function(b) os.remove(b .. "/usbmtp.koplugin/mtp/lib/common.sh") end, "missing mtp/lib/common.sh")
+try_broken("main.lua doesn't compile", function(b) write(b .. "/usbmtp.koplugin/main.lua", "local x = = 1\n") end, "broken file")
+try_broken("empty MTP program", function(b) write(b .. "/usbmtp.koplugin/mtp/bin/umtprd", "") end, "missing or empty")
+
+print("== hostile paths, crafted with python's zipfile")
+local function craft(entries)
+    fresh_install("0.4")
+    build_zip("0.5", "usbmtp.koplugin-v0.5.zip")
+    local py = string.format([[import zipfile
+z = zipfile.ZipFile('%s/srv/usbmtp.koplugin-v0.5.zip', 'a')
+for n in %s: z.writestr(n, 'x')
+z.close()]], W, entries)
+    write(W .. "/craft.py", py)
+    sh("python3 -I " .. W .. "/craft.py")
+    sh(string.format("cd %s/srv && sha256sum usbmtp.koplugin-v0.5.zip > SHA256SUMS", W))
+    release("v0.5", GOOD)
+    local i = Updater.check("0.4", WORK)
+    return Updater.install(i, ROOT, WORK)
+end
+ok, ierr = craft("['usbmtp.koplugin/../../escape.txt']")
+check(not ok and ierr:find("Unexpected path"), "../ refused: " .. tostring(ierr))
+ok, ierr = craft("['/tmp/absolute.txt']")
+check(not ok and ierr:find("Unexpected path"), "absolute path refused: " .. tostring(ierr))
+check(not exists("/tmp/absolute.txt") and not exists(W .. "/escape.txt"), "nothing written outside")
+-- A real symlink entry (zip -r would store the target's content instead).
+fresh_install("0.4")
+build_zip("0.5", "usbmtp.koplugin-v0.5.zip")
+write(W .. "/craft.py", string.format([[import zipfile
+z = zipfile.ZipFile('%s/srv/usbmtp.koplugin-v0.5.zip', 'a')
+zi = zipfile.ZipInfo('usbmtp.koplugin/link'); zi.create_system = 3; zi.external_attr = 0o120777 << 16
+z.writestr(zi, '/etc/passwd'); z.close()]], W))
+sh("python3 -I " .. W .. "/craft.py")
+sh(string.format("cd %s/srv && sha256sum usbmtp.koplugin-v0.5.zip > SHA256SUMS", W))
+release("v0.5", GOOD)
+ok, ierr = Updater.install(Updater.check("0.4", WORK), ROOT, WORK)
+check(not ok and ierr:find("entry type in the zip %(link%)"), "symlink refused: " .. tostring(ierr))
+check(installed_version() == "0.4", "symlink: installed copy untouched")
+ok, ierr = craft("['usbmtp.koplugin/notes..txt']")
+check(ok, "a harmless 'notes..txt' is allowed: " .. tostring(ierr))
+check(exists(ROOT .. "/notes..txt"), "and installed")
+
+print("== helpers")
+check(Updater.safeEntryPath("usbmtp.koplugin/a..b/c.lua") and not Updater.safeEntryPath("usbmtp.koplugin/../x")
+      and not Updater.safeEntryPath("usbmtp.koplugin/./x") and not Updater.safeEntryPath("a\\b"), "safeEntryPath")
+local cut = Updater.shortNotes(string.rep("a", 9) .. "é", 10) -- é is 2 bytes; the cut lands inside it
+check(cut == string.rep("a", 9) .. "…", "notes cut at a UTF-8 boundary: " .. cut)
 
 print("== release zip built by tools/make-release.sh installs cleanly")
 fresh_install("0.3")

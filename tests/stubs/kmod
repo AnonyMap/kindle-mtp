@@ -2,6 +2,8 @@
 F=/tmp/kmtp-test/fake
 me="$(basename "$0")"
 echo "$me $*" >>"$F/calls"
+# Also record exact argument boundaries, so quoting bugs show up.
+{ printf '%s' "$me"; for a in "$@"; do printf ' <%s>' "$a"; done; echo; } >>"$F/argv"
 case "$me" in
   modprobe) exit 1 ;;
   insmod)

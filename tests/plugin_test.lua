@@ -8,13 +8,19 @@ function UIManager:show(w) shown[#shown+1]=w; note("show "..w.kind.." "..((w.tex
 function UIManager:close(w) for i=#shown,1,-1 do if shown[i]==w then table.remove(shown,i) end end end
 function UIManager:forceRePaint() end
 function UIManager:askForRestart(msg) UIManager.restart_msg = msg end
+function UIManager:restartKOReader() UIManager.restarted = true end
 function UIManager:flushSettings() local R = package.loaded["apps/reader/readerui"]; if R and R.instance then R.instance:saveSettings() end end
 function UIManager:getTopmostVisibleWidget() return shown[#shown] end
 local function runTasks(n) for _=1,(n or 1) do local t = tasks; tasks = {}; for _,f in ipairs(t) do f() end end end
 local function widget(kind) return { new = function(_, o) o = o or {}; o.kind = kind; return o end } end
 local settings = {}
 G_reader_settings = { isTrue=function(_,k) return settings[k]==true end,
-  flipNilOrFalse=function(_,k) settings[k] = not settings[k] end, saveSetting=function(_,k,v) settings[k]=v end }
+  flipNilOrFalse=function(_,k) settings[k] = not settings[k] end, saveSetting=function(_,k,v) settings[k]=v end,
+  readSetting=function(_,k) return settings[k] end,
+  nilOrTrue=function(_,k) return settings[k] == nil or settings[k] == true end,
+  flipNilOrTrue=function(_,k) if settings[k] == nil or settings[k] == true then settings[k] = false else settings[k] = nil end end }
+local broadcasts = {}
+function UIManager:broadcastEvent(ev) broadcasts[#broadcasts+1] = ev.name end
 local notes = {}
 local exited = 0
 local Device = { isKindle=function() return true end, exit=function() exited = exited + 1 end }
@@ -28,13 +34,21 @@ package.preload["ui/event"] = function() return { new=function(_, name) return {
 package.preload["ffi/posix_h"] = function() require("ffi").cdef("int getpid(void);"); return true end
 package.preload["dispatcher"] = function() return { registerAction=function() end } end
 package.preload["datastorage"] = function() return { getDataDir=function() return "/tmp/kmtp-test/fake/koreader" end } end
-package.preload["ui/network/manager"] = function() return { runWhenOnline=function(_, cb) cb() end } end
+local wifi_off_calls = 0
+package.preload["ui/network/manager"] = function() return { runWhenOnline=function(_, cb) cb() end,
+  afterWifiAction=function() wifi_off_calls = wifi_off_calls + 1 end } end
 package.preload["ffi/util"] = function() return { template=function(fmt, ...) local a = {...}; return (fmt:gsub("%%(%d)", function(i) return tostring(a[tonumber(i)]) end)) end } end
 -- Stand-in updater: scripted results, records calls
 local FakeUpdater = { calls = {} }
 function FakeUpdater.check(cur) FakeUpdater.calls[#FakeUpdater.calls+1] = "check "..cur; return FakeUpdater.next_check, FakeUpdater.next_err end
 function FakeUpdater.install(info, root) FakeUpdater.calls[#FakeUpdater.calls+1] = "install "..info.version.." "..root; return FakeUpdater.next_install, FakeUpdater.next_install_err end
-package.preload["usbmtp_updater"] = function() return FakeUpdater end
+package.preload["usbmtp_updater"] = function()
+  -- Real helpers, scripted network/install.
+  local real = dofile("/tmp/kmtp-test/plugin/usbmtp.koplugin/usbmtp_updater.lua")
+  FakeUpdater.shortNotes = real.shortNotes
+  FakeUpdater.cleanupAfterUpdate = function() end
+  return FakeUpdater
+end
 package.preload["pluginshare"] = function() return {} end
 package.preload["ui/uimanager"] = function() return UIManager end
 package.preload["logger"] = function() local n=function() end; return {info=n,warn=n,dbg=n,err=n} end
@@ -201,21 +215,114 @@ startNow(); FakeUpdater.calls = {}
 upd.callback()
 check(#FakeUpdater.calls == 0 and top().text:find("Stop the USB file transfer first"), "refuses while a transfer is running")
 CtlM:stop()
+os.execute("mkdir -p /var/tmp/kmtp && echo STARTED=1 > /var/tmp/kmtp/state")
+upd.callback()
+check(top().text:find("Stop the USB file transfer first"), "refuses while a session it didn't start is running")
+os.remove("/var/tmp/kmtp/state")
 FakeUpdater.next_check = { newer = false, version = V }
+local w0 = wifi_off_calls
 upd.callback()
 check(top().text:find("You have the latest version %(v" .. esc(V) .. "%)"), "says up to date")
+check(wifi_off_calls == w0 + 1, "hands Wi-Fi back (user's after-Wi-Fi setting)")
 FakeUpdater.next_check, FakeUpdater.next_err = nil, "Could not reach GitHub: timeout"
 upd.callback()
 check(top().text:find("Could not reach GitHub"), "shows network errors")
 FakeUpdater.next_check = { newer = true, version = NEXT, notes = "Faster stop." }
 upd.callback()
 check(top().kind == "ConfirmBox" and top().text:find("Version " .. esc(NEXT) .. " is available %(you have " .. esc(V) .. "%)") and top().text:find("Faster stop."), "offers the update with notes")
+check(top().flush_events_on_show == true, "taps made while checking can't press Install")
+FakeUpdater.next_install, FakeUpdater.next_install_err = nil, "Checksum mismatch (download corrupted?). Nothing was changed."
+top().ok_callback()
+check(top().text:find("Update failed.") and top().text:find("Checksum mismatch"), "explains a failed install")
+check(not CtlM.update_pending, "a failed install doesn't lock anything")
+upd.callback()
 FakeUpdater.next_install = true
 top().ok_callback()
 check(FakeUpdater.calls[#FakeUpdater.calls]:find("^install " .. esc(NEXT) .. " .*/usbmtp.koplugin$"), "installs into the plugin folder")
-check(UIManager.restart_msg and UIManager.restart_msg:find("Updated to v" .. esc(NEXT)), "asks to restart KOReader")
-FakeUpdater.next_install, FakeUpdater.next_install_err = nil, "Checksum mismatch (download corrupted?). Nothing was changed."
-upd.callback(); top().ok_callback()
-check(top().text:find("Update failed. The installed version was not changed.") and top().text:find("Checksum mismatch"), "explains a failed install")
+check(top().kind == "ConfirmBox" and top().text:find("Updated to v" .. esc(NEXT)) and top().flush_events_on_show, "offers a restart (taps flushed)")
+top().cancel_callback = top().cancel_callback or function() end
+UIManager:close(top()) -- "Later"
+menuItem("Start USB file transfer").callback()
+check(not CtlM.active and top().text:find("Restart KOReader to finish updating"), "Start waits for the restart (old code + new scripts never mix)")
+upd.callback()
+check(top().text:find("Updated to v"), "Check for updates offers the restart again instead of re-downloading")
+top().ok_callback()
+check(UIManager.restarted, "Restart now restarts KOReader")
+CtlM.update_pending = nil
+
+print("== N. what happens when plugged into a computer")
+CtlM = P3._controller
+CtlM.active = false
+settings.usbmtp_on_plug = nil; settings.usbmtp_prompt_on_plug = true
+local plugItem
+for _, it in ipairs(menu_items.usbmtp.sub_item_table) do
+  if it.text_func and it.text_func():find("^When plugged into a computer") then plugItem = it end
+end
+check(plugItem and plugItem.text_func():find("ask first"), "old 'ask' setting carries over")
+settings.usbmtp_on_plug = "auto"; udc("not attached")
+P3:new{ ui = mkui(nil) }  -- an instance to receive the event
+CtlM:onCharging(); runTasks(2); udc("configured"); runTasks()
+check(CtlM.active and top().kind == "ConfirmBox" and top().cancel_text == "Stop", "auto: starts with no prompt")
+fakeProcStat("S"); CtlM:stop()
+settings.usbmtp_on_plug = "off"; udc("not attached"); local n0 = #shown
+CtlM:onCharging(); runTasks(2); udc("configured"); runTasks(20)
+check(not CtlM.active and #shown == n0, "off: does nothing")
+settings.usbmtp_on_plug = nil; settings.usbmtp_prompt_on_plug = nil
+
+print("== O. new books are listed after Stop")
+os.execute("mkdir -p /mnt/base-us/documents/Old.sdr && echo old > /mnt/base-us/documents/Old.epub && touch -d '2 days ago' /mnt/base-us/documents/Old.epub")
+local O = menuItem("Start USB file transfer"); O.callback(); fakeProcStat("S")
+os.execute("sleep 1; mkdir -p '/mnt/base-us/documents/Sci-Fi' && echo new > '/mnt/base-us/documents/Sci-Fi/Dune - Frank Herbert.epub'"
+  .. " && echo meta > /mnt/base-us/documents/Old.sdr/metadata.epub.lua && echo x > /mnt/base-us/documents/.hidden")
+local d = top(); UIManager:close(d); d.cancel_callback()
+check(top().text:find("1 new file%(s%) on the Kindle") and top().text:find("Dune %- Frank Herbert.epub"), "lists the new book")
+check(not top().text:find("Old.epub") and not top().text:find("metadata") and not top().text:find("hidden"), "skips old books, .sdr metadata and dot-files")
+check(top().timeout == nil, "list stays up until dismissed")
+local rf = io.open("/tmp/kmtp-test/plugin/usbmtp.koplugin/mtp/received.txt"):read("*a")
+check(rf:find("^/mnt/us/documents/Sci%-Fi/Dune"), "paths given as /mnt/us (what KOReader uses)")
+O.callback(); fakeProcStat("S"); d = top(); UIManager:close(d); d.cancel_callback()
+check(top().text:find("Safe to unplug") and not top().text:find("new file") and top().timeout == 4, "nothing new: plain message that times out")
+
+print("== P. status-bar marker while sharing")
+local footer_items = {}
+local footer = { addAdditionalFooterContent=function(_, f) footer_items[#footer_items+1] = f end,
+  removeAdditionalFooterContent=function(_, f) for i=#footer_items,1,-1 do if footer_items[i]==f then table.remove(footer_items,i) end end end }
+openBook()
+local readerP = P3:new{ ui = { menu = { registerToMainMenu=function() end }, document = ReaderUI.instance.document, view = { footer = footer } } }
+readerP:onReaderReady()
+check(#footer_items == 0, "no marker when not sharing")
+O.callback(); fakeProcStat("S")
+check(#footer_items == 1 and footer_items[1]() == "ᴍᴛᴘ", "marker shown while sharing")
+d = top(); UIManager:close(d); d.cancel_callback()
+check(#footer_items == 0, "marker removed after Stop (footer settings restored)")
+settings.usbmtp_footer = false
+O.callback(); fakeProcStat("S")
+check(#footer_items == 0, "opt-out respected")
+CtlM:stop(); settings.usbmtp_footer = nil
+readerP:onCloseWidget()
+check(CtlM.reader_plugin == nil, "reader closing clears its reference")
+
+print("== Q. cable in but no computer ever connected, then unplugged")
+O.callback(); fakeProcStat("S")
+udc("powered"); runTasks()          -- a cable (charger, or a Mac with no MTP app)
+check(CtlM.active, "keeps waiting while the cable is in")
+udc("not attached"); runTasks(); runTasks()
+check(not CtlM.active and top().text:find("cable was unplugged"), "stops when it's pulled, so the Kindle can sleep")
+
+print("== R. nothing connects for 10 minutes")
+O.callback(); fakeProcStat("S")
+CtlM.started_at = os.time() - 601; runTasks()
+check(not CtlM.active and top().text:find("No computer connected within 10 minutes"), "gives up after 10 minutes")
+
+print("== S. stopping during sleep fails: reported on wake")
+O.callback(); fakeProcStat("S")
+os.execute("touch /tmp/kmtp-test/fake/fail_insmod_g_mass_storage")
+local readerS = P3:new{ ui = mkui(nil) }
+readerS:onSuspend()
+os.remove("/tmp/kmtp-test/fake/fail_insmod_g_mass_storage")
+readerS:onResume(); runTasks()
+check(top().text:find("went to sleep") and top().text:find("Stock USB was not restored"), "tells the user stock USB needs a reboot")
+check(top().timeout == nil, "and that message stays up")
+P3._controller:stop() -- clean up (retries the restore)
 
 print(string.format("\n%d passed, %d failed", pass, fail))
