@@ -71,6 +71,12 @@ volumd_state() {
     fi
 }
 
+# Running, and not a zombie (a dead child not yet reaped still answers kill -0).
+pid_alive() {
+    kill -0 "$1" 2>/dev/null || return 1
+    [ "$(awk '{print $3}' "/proc/$1/stat" 2>/dev/null)" != "Z" ]
+}
+
 daemon_pid() {
     [ -f "${KMTP_PIDFILE}" ] || return 1
     _p="$(cat "${KMTP_PIDFILE}")"
@@ -96,14 +102,44 @@ save_gms_params() {
             "" | "(null)") continue ;;
         esac
         [ -z "$(echo "${_v}" | tr -d ',')" ] && continue
-        # Values with spaces can't round-trip through insmod safely; record and skip.
+        # A double quote can't be passed through the kernel's parameter parser.
         case "${_v}" in
-            *" "*) log "note: not restoring ${_k} (contains spaces): ${_v}"; continue ;;
+            *'"'*) log "note: not restoring ${_k} (contains a double quote): ${_v}"; continue ;;
         esac
+        state_set GMS_PARAM "${_k}=${_v}"   # one per line, so values may contain spaces
         _params="${_params} ${_k}=${_v}"
     done
-    state_set GMS_PARAMS "${_params# }"
     log "saved g_mass_storage params: ${_params:- (none)}"
+}
+
+# Reload g_mass_storage with the parameters save_gms_params recorded.
+# Values with spaces are passed as name="value", the form the kernel's
+# module-parameter parser understands.
+reload_saved_gms() {
+    set --
+    if grep -q '^GMS_PARAM=' "${KMTP_STATE}" 2>/dev/null; then
+        while IFS= read -r _l; do
+            case "${_l}" in
+                GMS_PARAM=*)
+                    _kv="${_l#GMS_PARAM=}"
+                    _k="${_kv%%=*}"
+                    _v="${_kv#*=}"
+                    case "${_v}" in
+                        *" "*) set -- "$@" "${_k}=\"${_v}\"" ;;
+                        *) set -- "$@" "${_k}=${_v}" ;;
+                    esac
+                    ;;
+            esac
+        done <"${KMTP_STATE}"
+    else
+        # State written by v0.5 or earlier: one space-separated line.
+        set -f
+        # shellcheck disable=SC2046
+        set -- $(state_get GMS_PARAMS)
+        set +f
+    fi
+    log "reloading g_mass_storage $*"
+    reload_gms "$@"
 }
 
 # Is the stock USB drive mode actively exporting storage right now?
@@ -151,11 +187,11 @@ stop_daemon() {
         log "stopping umtprd (pid ${_p})"
         kill -TERM "${_p}" 2>/dev/null
         _i=0
-        while kill -0 "${_p}" 2>/dev/null && [ ${_i} -lt 20 ]; do
+        while pid_alive "${_p}" && [ ${_i} -lt 20 ]; do
             usleep 250000 2>/dev/null || sleep 1
             _i=$((_i + 1))
         done
-        if kill -0 "${_p}" 2>/dev/null; then
+        if pid_alive "${_p}"; then
             log "umtprd did not exit, sending SIGKILL"
             kill -KILL "${_p}" 2>/dev/null
             usleep 300000 2>/dev/null || sleep 1
@@ -224,8 +260,7 @@ teardown_gadget() {
 
 reload_gms() {
     # reload_gms [params...]  -> 0 if g_mass_storage is loaded afterwards
-    # shellcheck disable=SC2068
-    insmod "${MODDIR}/legacy/g_mass_storage.ko" $@ 2>/dev/null && return 0
+    insmod "${MODDIR}/legacy/g_mass_storage.ko" "$@" 2>/dev/null && return 0
     [ $# -gt 0 ] && log "warning: reload with saved params failed, retrying with defaults"
     modprobe g_mass_storage 2>/dev/null || insmod "${MODDIR}/legacy/g_mass_storage.ko" 2>/dev/null
 }
@@ -243,12 +278,7 @@ teardown() {
 
     # Put the stock USB driver back the way we found it.
     if [ "$(state_get GMS_WAS_LOADED)" = "yes" ] && ! mod_loaded g_mass_storage; then
-        _gp="$(state_get GMS_PARAMS)"
-        log "reloading g_mass_storage ${_gp}"
-        set -f   # saved params are word-split on purpose, but never globbed
-        # shellcheck disable=SC2086
-        reload_gms ${_gp}
-        set +f
+        reload_saved_gms
         if ! mod_loaded g_mass_storage; then
             log "ERROR: could not reload the stock USB driver. Reboot the Kindle to restore stock USB."
             _restore_ok=1

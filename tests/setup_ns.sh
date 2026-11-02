@@ -15,6 +15,7 @@ echo "not attached" >/sys/class/udc/ci_hdrc.0/state
 P=/sys/module/g_mass_storage/parameters
 echo ""  >$P/file; echo "Y" >$P/removable; echo 1 >$P/luns; echo 6473 >$P/idVendor; echo 4 >$P/idProduct
 echo "N" >$P/stall; echo "N" >$P/ro; echo "(null)" >$P/iSerialNumber; echo "," >$P/cdrom
+echo "Amazon Kindle" >$P/iProduct
 # fake modules dir
 mount -t tmpfs none /lib/modules
 mount -t tmpfs none /mnt/base-us && mkdir -p /mnt/base-us/documents

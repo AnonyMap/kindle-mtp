@@ -74,7 +74,8 @@ storage is switched off, and usbmtp exists to fill that gap.
 
 While sharing, a dialog offers **Stop** or **Hide** (keep reading). With Hide, a small **ᴍᴛᴘ**
 appears in the reader's status bar while sharing is on; you can turn it off in the menu. Sharing
-stops by itself when you unplug, when the Kindle sleeps, or when KOReader exits.
+stops by itself when you unplug, when the Kindle sleeps, or when KOReader exits or crashes. It
+also stops if no computer connects within 10 minutes, so the Kindle can sleep again.
 
 After Stop, it lists the books that arrived, e.g. "2 new file(s) on the Kindle: …". The list
 covers files that appeared in `documents/` during the session, and leaves out KOReader's own
@@ -93,17 +94,30 @@ From v0.5 on, the plugin updates itself from this repo's
 [GitHub Releases](https://github.com/AnonyMap/usbmtp/releases) over Wi-Fi:
 **Tools → USB file transfer (MTP) → Check for updates**.
 
-It shows the release notes and asks before installing. KOReader then needs a restart. It only
-checks when you tap that menu entry, never automatically.
+- **When it runs:** only when you tap that menu entry, never automatically. It won't update
+  while any transfer is running, including one started over SSH or left over from a crash.
+- **What you see:** it shows the release notes and asks before installing. Afterwards it puts
+  Wi-Fi back how your KOReader Wi-Fi setting says.
+- **Restarting:** after an update, KOReader needs a restart. Until then, USB file transfer is
+  unavailable, so the old code never runs the new scripts.
 
-Before installing, it refuses anything that:
-- isn't the latest published release;
-- fails its `SHA256SUMS` checksum;
-- contains files outside `usbmtp.koplugin/`;
-- has a version inside the zip that doesn't match the release tag.
+Before changing anything, it refuses a release that:
+- isn't the latest published release, or doesn't have a plain version number (`v0.6`);
+- fails its `SHA256SUMS` checksum, or can't be read completely;
+- contains anything other than plain files and folders under `usbmtp.koplugin/` (no `../`, no
+  absolute paths, no symlinks);
+- is missing any file the plugin needs to load and run;
+- has a version inside the zip that doesn't match the release tag;
+- has Lua code that doesn't compile.
 
-The new copy is unpacked next to the old one and swapped in with two renames. If that fails,
-the old copy is put back. It won't update while a transfer is running.
+**The swap:**
+- The new copy is unpacked next to the old one, synced to flash, and swapped in with two
+  renames.
+- If the second rename fails, the old copy is put back. If even that fails, the message says
+  exactly which folder to rename back.
+- The previous version stays as `usbmtp.koplugin.old`, which KOReader ignores. It's deleted the
+  first time the new version loads successfully. If a new version ever failed to load, renaming
+  that folder back restores the old one.
 
 v0.4 and earlier have no updater, so install v0.5 by hand once (see [Install](#install)).
 
@@ -297,6 +311,11 @@ release that's missing them, so nothing breaks in the meantime.
 
 ## Tests
 
+The **Tests** workflow runs the whole suite on every push and pull request. The **Release**
+workflow runs it again, then installs the freshly built zip with the real updater
+(`tests/check_release_zip.lua`) before publishing. A release that fails either step is never
+published.
+
 `tests/run.sh` runs the real scripts and the real plugin code against a fake Kindle, inside a
 private mount namespace. The fake Kindle provides:
 - a fake `/sys` and `/proc`;
@@ -336,6 +355,7 @@ If BusyBox is installed, the scripts run under BusyBox ash, as on the device. Th
 sudo sh tests/run.sh
 # include the updater tests (needs a koreader-base checkout, zip, lua-dkjson, lua-filesystem, libarchive13):
 sudo KOREADER_BASE=/path/to/koreader-base sh tests/run.sh
+# (.github/actions-test-deps.sh installs everything and fetches the pinned koreader-base ffi/)
 ```
 
 ## How this was made
@@ -347,13 +367,18 @@ on my own Kindle. I'm sceptical of AI-made software, so here's what that means i
 **How it was checked:**
 - Claims about how the Kindle, Linux kernel, KOReader, uMTP-Responder and Calibre behave were
   checked against their source code, not assumed.
-- A separate AI review went through the code looking for bugs. It was given only the code and a
-  short description, not the development conversation or its conclusions. It found two serious
-  bugs, both since fixed:
-  - a kernel use-after-free in the stop order;
-  - USB buffers too small for long filenames.
-- The [test suite](#tests) runs the real scripts and plugin code against a simulated Kindle. It
-  includes a test proven to fail on the buggy stop order.
+- Two separate AI reviews went through the code looking for bugs, each given only the code and a
+  short description, not the development conversation or its conclusions. All the serious
+  findings have been fixed:
+  - **First review:**
+    - a kernel use-after-free in the stop order;
+    - USB buffers too small for long filenames.
+  - **Second review:** the updater would install a broken release (missing files, or code that
+    doesn't compile), leaving a plugin that couldn't load or update itself. It also found smaller
+    issues too, mostly edge cases in updating, sleep and unplugging.
+- The [test suite](#tests) runs the real scripts and plugin code against a simulated Kindle, and
+  runs on GitHub for every change. It includes tests that were checked to fail on each of those
+  bugs.
 
 **What that doesn't give you:**
 - It has been used on one Kindle, by one person. Many things are still

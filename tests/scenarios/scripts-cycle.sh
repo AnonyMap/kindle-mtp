@@ -9,4 +9,5 @@ ls -R /sys/kernel/config/usb_gadget/kmtp | head -30
 echo "########## STOP"; sh $P/mtp-stop.sh; echo "exit=$?"
 echo "########## AFTER"; cat /proc/modules; echo "--mounts"; cat /proc/mounts; echo "--gadget"; ls /sys/kernel/config 2>&1; ls /var/tmp/kmtp 2>&1
 echo "########## CALLS"; cat $F/calls
+echo "########## ARGV"; cat $F/argv
 echo "########## STOP AGAIN"; sh $P/mtp-stop.sh

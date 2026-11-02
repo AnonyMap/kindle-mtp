@@ -34,10 +34,12 @@ INSTALL
 
 UPDATING (v0.5 and later)
   Tools > USB file transfer (MTP) > Check for updates (needs Wi-Fi).
-  It shows the release notes and asks first; then restart KOReader. It only
-  checks when you tap it. It refuses a download that fails its checksum, or
-  that contains anything outside this plugin's folder, and it keeps the
-  current version if anything goes wrong. Stop any transfer before updating.
+  It shows the release notes and asks first. It only checks when you tap it.
+  It refuses a download that fails its checksum, is incomplete, contains
+  anything outside this plugin's folder, or has broken code, and it keeps
+  the current version if anything goes wrong. Stop any transfer first.
+  After updating, restart KOReader (USB transfer waits until you do). The
+  previous version is kept as usbmtp.koplugin.old until the new one loads.
 
 START IT (any of these)
   - Menu: Tools (wrench) > USB file transfer (MTP) > Start USB file transfer
@@ -77,7 +79,8 @@ CALIBRE
 
 SAFETY RAILS (automatic)
   - Stops by itself when you unplug the cable, the Kindle sleeps, KOReader
-    exits/restarts, KOReader crashes, or the MTP program dies.
+    exits/restarts, KOReader crashes, or the MTP program dies, and if no
+    computer connects within 10 minutes.
   - Saves the open book's progress before sharing starts.
   - If the computer replaces or deletes the book you have open, that book
     is closed (sharing continues) so KOReader never reads a half-copied file.

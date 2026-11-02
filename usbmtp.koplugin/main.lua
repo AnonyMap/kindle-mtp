@@ -30,8 +30,8 @@ local UIManager = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local DataStorage = require("datastorage")
 local NetworkMgr = require("ui/network/manager")
--- Must be required while the plugin loads: KOReader only puts the plugin folder on
--- package.path during loading. Distinct name, since loaded modules are shared by all plugins.
+-- Distinct module name: package.loaded is shared by every plugin, so a generic
+-- name like "updater" could collide with another plugin's module.
 local Updater = require("usbmtp_updater")
 local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
@@ -46,6 +46,7 @@ local STATE_FILE = "/var/tmp/kmtp/state"
 local PID_FILE = "/var/tmp/kmtp/umtprd.pid"
 local UDC_STATE = "/sys/class/udc/ci_hdrc.0/state"
 local POLL_SECS = 2
+local NO_HOST_TIMEOUT = 600 -- seconds without a computer before giving up (keeps the Kindle from never sleeping)
 
 local function readFirstLine(path)
     local f = io.open(path, "r")
@@ -183,6 +184,12 @@ function Ctl:start()
         self:showDialog()
         return
     end
+    if self.update_pending then
+        UIManager:show(InfoMessage:new{
+            text = T(_("Restart KOReader to finish updating to v%1 first."), self.update_pending),
+        })
+        return
+    end
     if fileExists(STATE_FILE) then
         self:offerStaleCleanup()
         return
@@ -212,6 +219,8 @@ function Ctl:start()
 
     self.active = true
     self.connected = false
+    self.cable_seen = false
+    self.started_at = os.time()
     self.lost_polls = 0
     self.hidden = false
     self:rememberOpenBook()
@@ -260,7 +269,7 @@ function Ctl:stop(reason, quiet)
     self.book = nil
     self:updateFooter()
 
-    if quiet then return end
+    if quiet then return ok end
 
     local FileManager = package.loaded["apps/filemanager/filemanager"]
     if FileManager and FileManager.instance then
@@ -284,6 +293,7 @@ function Ctl:stop(reason, quiet)
     -- Leave a list of new books up until dismissed; a plain "stopped" can time out.
     local has_new = ok and #self:receivedFiles() > 0
     UIManager:show(InfoMessage:new{ text = text, timeout = (ok and not has_new) and 4 or nil })
+    return ok
 end
 
 function Ctl:offerStaleCleanup()
@@ -414,14 +424,23 @@ function Ctl:poll()
                 notify(_("Computer connected over USB."))
             end
         end
-    elseif self.connected and st == "not attached" then
+    elseif (self.connected or self.cable_seen) and st == "not attached" then
         -- Only VBUS loss means unplugged. "suspended" (computer asleep) and the
         -- default/addressed states seen while a host re-enumerates are not.
+        -- Also applies when a cable was in but no computer ever connected
+        -- (e.g. a Mac with no MTP app), so the Kindle can sleep again.
         self.lost_polls = self.lost_polls + 1
         if self.lost_polls >= 2 then
             self:stop(_("The cable was unplugged."))
             return
         end
+    end
+    if st ~= "not attached" and st ~= "unknown" then
+        self.cable_seen = true
+    end
+    if not self.connected and os.time() - (self.started_at or os.time()) > NO_HOST_TIMEOUT then
+        self:stop(T(_("No computer connected within %1 minutes."), math.floor(NO_HOST_TIMEOUT / 60)))
+        return
     end
 
     self:checkOpenBook()
@@ -482,7 +501,7 @@ end
 
 function Ctl:onSuspend()
     if self.active then
-        self:stop(nil, true)
+        self.sleep_stop_ok = self:stop(nil, true)
         self.stopped_by_sleep = true
     end
 end
@@ -490,8 +509,21 @@ end
 function Ctl:onResume()
     if self.stopped_by_sleep then
         self.stopped_by_sleep = false
+        local ok = self.sleep_stop_ok
         UIManager:scheduleIn(1, function()
-            UIManager:show(InfoMessage:new{ text = _("USB file transfer was stopped because the Kindle went to sleep.\n\nIf a file was being copied at that moment, copy it again."), timeout = 5 })
+            local FileManager = package.loaded["apps/filemanager/filemanager"]
+            if FileManager and FileManager.instance then FileManager.instance:onRefresh() end
+            local text = _("USB file transfer was stopped because the Kindle went to sleep.\n\nIf a file was being copied at that moment, copy it again.")
+            if ok then
+                local summary = receivedSummary(self:receivedFiles())
+                if summary then text = text .. "\n\n" .. summary end
+            else
+                local err, not_restored = self:lastRunResult()
+                text = text .. "\n\n" .. _("Stopping didn't go cleanly:") .. " " .. (err or "") .. "\n" ..
+                       (not_restored and _("Stock USB was not restored. Reboot the Kindle before using USB.")
+                                      or _("If USB misbehaves, reboot the Kindle."))
+            end
+            UIManager:show(InfoMessage:new{ text = text, timeout = ok and 8 or nil })
         end)
     end
 end
@@ -537,6 +569,8 @@ function UsbMtp:init()
         end
         Ctl.mtp_dir = root .. "/mtp"
         Ctl.version = readFirstLine(Ctl.mtp_dir .. "/VERSION") or "?"
+        -- We loaded, so any update that just happened worked: drop the backup.
+        pcall(Updater.cleanupAfterUpdate, root)
     end
     Ctl:hookExit()
 
@@ -614,8 +648,17 @@ local function updateWorkDir()
     return DataStorage:getDataDir() .. "/cache/usbmtp-update"
 end
 
+-- A session we didn't start (SSH/KUAL, or left over from a crash) also counts.
+local function anySessionRunning()
+    return Ctl.active or fileExists(STATE_FILE) or daemonAlive()
+end
+
 function UsbMtp:checkForUpdates()
-    if Ctl.active then
+    if Ctl.update_pending then
+        self:offerRestart()
+        return
+    end
+    if anySessionRunning() then
         UIManager:show(InfoMessage:new{ text = _("Stop the USB file transfer first, then check for updates.") })
         return
     end
@@ -623,6 +666,9 @@ function UsbMtp:checkForUpdates()
         local busy = showBusy(_("Checking GitHub for updates…"))
         local info, err = Updater.check(Ctl.version, updateWorkDir())
         UIManager:close(busy)
+        if not info or not info.newer then
+            NetworkMgr:afterWifiAction() -- turn Wi-Fi back off if we turned it on (user's setting)
+        end
         if not info then
             UIManager:show(InfoMessage:new{ icon = "notice-warning", text = err })
             return
@@ -633,35 +679,51 @@ function UsbMtp:checkForUpdates()
             })
             return
         end
-        local notes = info.notes:gsub("\r", "")
-        if #notes > 700 then notes = notes:sub(1, 700) .. "…" end
+        local notes = Updater.shortNotes(info.notes, 700)
         UIManager:show(ConfirmBox:new{
             text = T(_("Version %1 is available (you have %2)."), info.version, Ctl.version) ..
                    (notes ~= "" and ("\n\n" .. notes) or "") ..
                    "\n\n" .. _("Install it? KOReader will need to restart."),
             ok_text = _("Install"),
+            flush_events_on_show = true, -- taps made while checking mustn't press Install
             ok_callback = function() self:installUpdate(info) end,
+            cancel_callback = function() NetworkMgr:afterWifiAction() end,
         })
     end)
 end
 
 function UsbMtp:installUpdate(info)
-    if Ctl.active then
+    if anySessionRunning() then
         UIManager:show(InfoMessage:new{ text = _("Stop the USB file transfer first.") })
+        NetworkMgr:afterWifiAction()
         return
     end
     local root = Ctl.mtp_dir:match("^(.*)/mtp$")
     local busy = showBusy(T(_("Downloading and installing v%1…"), info.version))
     local ok, err = Updater.install(info, root, updateWorkDir())
     UIManager:close(busy)
+    NetworkMgr:afterWifiAction()
     if not ok then
         UIManager:show(InfoMessage:new{
             icon = "notice-warning",
-            text = _("Update failed. The installed version was not changed.") .. "\n\n" .. tostring(err),
+            text = _("Update failed.") .. "\n\n" .. tostring(err),
         })
         return
     end
-    UIManager:askForRestart(T(_("Updated to v%1. Restart KOReader now to use it?"), info.version))
+    -- The code running now is the old version, but the scripts on disk are new:
+    -- don't let them mix. Starting a transfer waits for the restart.
+    Ctl.update_pending = info.version
+    self:offerRestart()
+end
+
+function UsbMtp:offerRestart()
+    UIManager:show(ConfirmBox:new{
+        text = T(_("Updated to v%1. Restart KOReader to finish the update.\n\nUntil then, USB file transfer is unavailable."), Ctl.update_pending),
+        ok_text = _("Restart now"),
+        cancel_text = _("Later"),
+        flush_events_on_show = true,
+        ok_callback = function() UIManager:restartKOReader() end,
+    })
 end
 
 function UsbMtp:showStatus()
