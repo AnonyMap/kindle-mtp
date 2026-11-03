@@ -252,13 +252,17 @@ local function baseName(path)
     return path:match("([^/]+)$") or path
 end
 
--- Split what arrived into books KOReader can open and anything else (Calibre's
--- metadata files, covers, ...).
+-- KOReader opens these too, but they aren't books (covers, Calibre's metadata).
+local NOT_BOOKS = { jpg = true, jpeg = true, png = true, gif = true, bmp = true, webp = true,
+                    svg = true, tif = true, tiff = true, xml = true, opf = true, json = true }
+
+-- Split what arrived into books KOReader can open and anything else.
 local function splitBooks(list)
     local ok, DocumentRegistry = pcall(require, "document/documentregistry")
     local books, others = {}, 0
     for _, f in ipairs(list) do
-        if not ok or DocumentRegistry:hasProvider(f) then
+        local ext = (f:match("%.([^./]+)$") or ""):lower()
+        if not NOT_BOOKS[ext] and (not ok or DocumentRegistry:hasProvider(f)) then
             books[#books + 1] = f
         else
             others = others + 1
@@ -545,18 +549,26 @@ end
 -- the cable was seen out since the last plug-in (plug_armed). If that was missed,
 -- it still counts unless the computer is already connected (nothing was
 -- re-plugged) or we only just stopped.
+
+-- Seeing the port with no cable at any point means the next Charging is a plug-in.
+function Ctl:noteCable()
+    if udcState() == "not attached" then self.plug_armed = true end
+end
+
 function Ctl:onCharging()
+    -- Bookkeeping first, whatever the mode: a cable is in now.
+    if self._unplug_check then UIManager:unschedule(self._unplug_check) end
+    local st = udcState()
+    local armed = self.plug_armed or st == "not attached" -- not attached: it's only just in
+    self.plug_armed = false
     local mode = onPlugMode()
     if mode == "off" then return end
     if self.active or self._probing then return end
-    local st = udcState()
-    if st == "not attached" then self.plug_armed = true end -- the cable is only just in
-    if not self.plug_armed and (st == "configured"
+    if not armed and (st == "configured"
             or (self.stopped_at and os.time() - self.stopped_at < REPLUG_QUIET_SECS)) then
         logger.info("usbmtp: charging event with the cable already in; not a plug-in (USB:", st, ")")
         return
     end
-    self.plug_armed = false
     self._probing = true
     local tries = 0
     self._probe = function()
@@ -589,7 +601,14 @@ end
 function Ctl:onNotCharging()
     if self._probe then UIManager:unschedule(self._probe) end
     self._probing = false
-    -- Cable pulled, or battery full? Watch the USB port for a few seconds.
+    -- Cable pulled, or battery full? Charging only stops by itself when (nearly)
+    -- full, so well below that it was the cable. Otherwise watch the USB port for a
+    -- few seconds. (Charge-complete can be reported at 98-99%, hence the margin.)
+    local okc, capacity = pcall(function() return Device:getPowerDevice():getCapacity() end)
+    if okc and type(capacity) == "number" and capacity < 90 then
+        self.plug_armed = true
+        return
+    end
     if self._unplug_check then UIManager:unschedule(self._unplug_check) end
     local tries = 0
     self._unplug_check = function()
@@ -611,6 +630,7 @@ function Ctl:onSuspend()
 end
 
 function Ctl:onResume()
+    self:noteCable()
     if self.stopped_by_sleep then
         self.stopped_by_sleep = false
         local ok = self.sleep_stop_ok
@@ -620,7 +640,8 @@ function Ctl:onResume()
             local text = _("USB file transfer was stopped because the Kindle went to sleep.\n\nIf a file was being copied at that moment, copy it again.")
             local books, summary = {}, nil
             local st = udcState()
-            local cable_in = ok and st ~= "not attached" and st ~= "unknown"
+            -- Only a computer that's (still) connected; on a charger it would just wait.
+            local cable_in = ok and (st == "configured" or st == "suspended")
             if ok then
                 local others
                 books, others = splitBooks(self:receivedFiles())
@@ -682,8 +703,9 @@ function UsbMtp:init()
         pcall(Updater.cleanupAfterUpdate, root)
         -- Started with the cable in: wait for it to come out before acting on a
         -- Charging event (it may just be the battery topping up).
-        Ctl.plug_armed = udcState() == "not attached"
+        Ctl.plug_armed = false
     end
+    Ctl:noteCable() -- (each book opened or closed is a chance to see the cable out)
     Ctl:hookExit()
 
     self.ui.menu:registerToMainMenu(self)

@@ -27,11 +27,13 @@ local exited = 0
 local inhibited = 0
 local Device = { isKindle=function() return true end, exit=function() exited = exited + 1 end,
   input = { inhibitInputUntil=function() inhibited = inhibited + 1 end } }
+local capacity = 100
+function Device:getPowerDevice() return { getCapacity=function() return capacity end } end
 package.preload["device"] = function() return Device end
 package.preload["ui/widget/confirmbox"] = function() return widget("ConfirmBox") end
 package.preload["ui/widget/buttondialog"] = function() return widget("ButtonDialog") end
 package.preload["document/documentregistry"] = function() return { hasProvider=function(_, f)
-  return f:lower():match("%.epub$") or f:lower():match("%.pdf$") or f:lower():match("%.azw3$") or f:lower():match("%.cbz$") end } end
+  return f:lower():match("%.epub$") or f:lower():match("%.pdf$") or f:lower():match("%.jpg$") or f:lower():match("%.azw3$") or f:lower():match("%.cbz$") end } end
 local opened = {}
 package.preload["apps/filemanager/filemanagerutil"] = function() return { openFile=function(ui, file, _, no_dialog)
   opened[#opened+1] = { ui = ui, file = file, no_dialog = no_dialog } end } end
@@ -283,11 +285,11 @@ os.execute("mkdir -p /mnt/base-us/documents/Old.sdr && echo old > /mnt/base-us/d
 local O = menuItem("Start USB file transfer"); O.callback(); fakeProcStat("S")
 os.execute("sleep 1; mkdir -p '/mnt/base-us/documents/Sci-Fi' && echo new > '/mnt/base-us/documents/Sci-Fi/Dune - Frank Herbert.epub'"
   .. " && echo meta > /mnt/base-us/documents/Old.sdr/metadata.epub.lua && echo x > /mnt/base-us/documents/.hidden")
-os.execute("echo cal > /mnt/base-us/documents/metadata.calibre")
+os.execute("echo cal > /mnt/base-us/documents/metadata.calibre && echo jpg > /mnt/base-us/documents/cover.jpg")
 local d = top(); UIManager:close(d); d.cancel_callback()
 local function rowTexts(w) local t = {}; for _, r in ipairs(w.buttons or {}) do t[#t+1] = r[1].text end; return table.concat(t, " / ") end
-check(top().kind == "ButtonDialog" and top().text:find("1 new book%(s%) on the Kindle") and top().text:find("Plus 1 other file"), "counts the new book, and other files separately")
-check(rowTexts(top()) == "Open Dune - Frank Herbert.epub / Close", "an Open button for the book (not for metadata.calibre)")
+check(top().kind == "ButtonDialog" and top().text:find("1 new book%(s%) on the Kindle") and top().text:find("Plus 2 other file"), "counts the new book, and other files separately")
+check(rowTexts(top()) == "Open Dune - Frank Herbert.epub / Close", "an Open button for the book (not for metadata.calibre, nor a cover image KOReader could open)")
 check(not rowTexts(top()):find("Old") and not rowTexts(top()):find("metadata") and not rowTexts(top()):find("hidden"), "skips old books, .sdr metadata and dot-files")
 check(inhibited > 0, "taps made while stopping can't press Open")
 local i0 = #shown
@@ -295,7 +297,7 @@ top().buttons[1][1].callback()
 check(#opened == 1 and opened[1].file == "/mnt/us/documents/Sci-Fi/Dune - Frank Herbert.epub" and opened[1].no_dialog
   and opened[1].ui == (ReaderUI.instance or package.loaded["apps/filemanager/filemanager"].instance), "Open opens it from wherever we are")
 check(#shown == i0 - 1, "and closes the message")
-os.remove("/mnt/base-us/documents/metadata.calibre")
+os.remove("/mnt/base-us/documents/metadata.calibre"); os.remove("/mnt/base-us/documents/cover.jpg")
 local rf = io.open("/tmp/kmtp-test/plugin/usbmtp.koplugin/mtp/received.txt"):read("*a")
 check(("\n" .. rf):find("\n/mnt/us/documents/Sci%-Fi/Dune"), "paths given as /mnt/us (what KOReader uses)")
 O.callback(); fakeProcStat("S"); d = top(); UIManager:close(d); d.cancel_callback()
@@ -382,6 +384,8 @@ check(CtlM.active and top().cancel_text == "Stop", "Start again starts it")
 CtlM:stop()
 udc("not attached"); O.callback(); fakeProcStat("S"); readerW:onSuspend(); readerW:onResume(); runTasks()
 check(top().kind == "InfoMessage" and top().timeout == 8, "cable out: plain message")
+udc("not attached"); O.callback(); fakeProcStat("S"); readerW:onSuspend(); udc("powered"); readerW:onResume(); runTasks()
+check(top().kind == "InfoMessage", "on a charger: no Start again (it would only wait for a computer)")
 
 print("== X. many new books: first five get buttons")
 O.callback(); fakeProcStat("S")
@@ -390,5 +394,24 @@ d = top(); UIManager:close(d); d.cancel_callback()
 check(top().text:find("7 new book%(s%)") and top().text:find("first 5") and #top().buttons == 6, "5 Open buttons + Close, rest pointed to the file browser")
 top().buttons[6][1].callback()
 check(top() == nil or top().kind ~= "ButtonDialog", "Close closes it")
+
+print("== Y. plug-in bookkeeping edge cases")
+capacity = 60; udc("configured"); CtlM.plug_armed = false
+CtlM:onNotCharging()
+check(CtlM.plug_armed == true, "charging stopped well below full: that was an unplug (even if the port lags)")
+capacity = 99; CtlM.plug_armed = false
+CtlM:onNotCharging()
+check(CtlM.plug_armed == false, "at 99%: maybe just charge-complete, so not assumed")
+CtlM:onCharging()                          -- quick re-plug while the check is pending
+udc("not attached"); runTasks(6)          -- a stale reading must not re-arm
+check(CtlM.plug_armed == false, "a pending unplug check is cancelled by the next plug-in")
+capacity = 100
+settings.usbmtp_on_plug = "off"; CtlM.plug_armed = true; udc("configured"); CtlM:onCharging()
+check(CtlM.plug_armed == false, "with 'do nothing', a plug-in still counts as used (switching to auto later won't fire on a top-up)")
+udc("not attached"); CtlM:onResume()
+check(CtlM.plug_armed == true, "seeing the cable out on wake arms it")
+CtlM.plug_armed = false; P3:new{ ui = mkui(nil) }
+check(CtlM.plug_armed == true, "so does opening/closing a book")
+settings.usbmtp_on_plug = nil
 
 print(string.format("\n%d passed, %d failed", pass, fail))

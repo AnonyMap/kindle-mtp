@@ -10,16 +10,28 @@ case "$me" in
     name="$(basename "$1" .ko)"
     [ -e "$F/fail_insmod_$name" ] && exit 1
     grep -q "^$name " "$F/proc/modules" || echo "$name 1000 0 - Live 0x0" >>"$F/proc/modules"
-    # Like the real driver: a file= parameter makes it export that file right away.
     if [ "$name" = g_mass_storage ]; then
+      L=/sys/devices/soc0/ci_hdrc.0/gadget/lun0/file
+      # Like the real driver: a file= parameter makes it export that file right away.
       for a in "$@"; do
-        case "$a" in file=?*) echo "${a#file=}" >/sys/devices/soc0/ci_hdrc.0/gadget/lun0/file ;; esac
+        case "$a" in file=?*) echo "${a#file=}" >"$L" ;; esac
       done
+      # Scenario switches: export on load anyway / ejecting fails / and so does rmmod
+      [ -e "$F/gms_exports_on_load" ] && echo /dev/mmcblk0p4 >"$L"
+      if [ -e "$F/gms_eject_fails" ] && [ ! -e "$F/lun_ro" ]; then  # read-only bind over the LUN
+        R=/tmp/kmtp-test/harness/realbin/mount
+        $R --bind "$L" "$L" && $R -o remount,ro,bind "$L" && touch "$F/lun_ro"
+      fi
+      [ -e "$F/gms_rmmod_fails" ] && touch "$F/fail_rmmod_g_mass_storage"
     fi
     ;;
   rmmod)
+    [ -e "$F/fail_rmmod_$1" ] && exit 1
     grep -q "^$1 " "$F/proc/modules" || exit 1
-    [ "$1" = g_mass_storage ] && : >/sys/devices/soc0/ci_hdrc.0/gadget/lun0/file
+    if [ "$1" = g_mass_storage ]; then  # the LUN goes away with the module
+      [ -e "$F/lun_ro" ] && /tmp/kmtp-test/harness/realbin/umount /sys/devices/soc0/ci_hdrc.0/gadget/lun0/file && rm -f "$F/lun_ro"
+      : >/sys/devices/soc0/ci_hdrc.0/gadget/lun0/file
+    fi
     sed -i "/^$1 /d" "$F/proc/modules" ;;
 esac
 exit 0

@@ -12,6 +12,7 @@ mount -t tmpfs none /sys
 mkdir -p /sys/class/udc/ci_hdrc.0 /sys/module/g_mass_storage/parameters /sys/kernel/config /sys/devices/soc0/ci_hdrc.0/gadget/lun0
 echo "not attached" >/sys/class/udc/ci_hdrc.0/state
 : >/sys/devices/soc0/ci_hdrc.0/gadget/lun0/file
+ln -s /sys/devices/soc0/ci_hdrc.0 /sys/class/udc/ci_hdrc.0/device   # the direct path the scripts try first
 P=/sys/module/g_mass_storage/parameters
 echo ""  >$P/file; echo "Y" >$P/removable; echo 1 >$P/luns; echo 6473 >$P/idVendor; echo 4 >$P/idProduct
 echo "N" >$P/stall; echo "N" >$P/ro; echo "(null)" >$P/iSerialNumber; echo "," >$P/cdrom

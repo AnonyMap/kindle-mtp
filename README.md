@@ -347,7 +347,7 @@ If BusyBox is installed, the scripts run under BusyBox ash, as on the device. Th
 - the list of received books (new files only; old books, `.sdr` metadata and dot-files left
   out), and opening them from the Stop message;
 - the stock driver never exporting the storage the Kindle still has mounted, even if its saved
-  settings would;
+  settings would, and Stop failing (never "Safe to unplug") if that can't be undone;
 - charging events that aren't plug-ins (battery top-up, re-enumeration after Stop) being
   ignored;
 - the three plug-in modes, including migrating the old setting;
@@ -380,8 +380,8 @@ on my own Kindle. I'm sceptical of AI-made software, so here's what that means i
 **How it was checked:**
 - Claims about how the Kindle, Linux kernel, KOReader, uMTP-Responder and Calibre behave were
   checked against their source code, not assumed.
-- Two separate AI reviews went through the code looking for bugs, each given only the code and a
-  short description, not the development conversation or its conclusions. All the serious
+- Three separate AI reviews went through the code looking for bugs, each given only the code and
+  a short description, not the development conversation or its conclusions. All the serious
   findings have been fixed:
   - **First review:**
     - a kernel use-after-free in the stop order;
@@ -389,6 +389,11 @@ on my own Kindle. I'm sceptical of AI-made software, so here's what that means i
   - **Second review:** the updater would install a broken release (missing files, or code that
     doesn't compile), leaving a plugin that couldn't load or update itself. It also found smaller
     issues too, mostly edge cases in updating, sleep and unplugging.
+  - **Third review (v0.7):** if the stock USB driver came back sharing the storage and couldn't
+    be stopped, Stop could still say "Safe to unplug" while the computer had the storage mounted.
+    Now the driver is never given its saved backing-file setting, and anything left exporting
+    makes Stop fail loudly. It also found gaps in telling a real plug-in from charging that
+    resumes with the cable still in.
 - The [test suite](#tests) runs the real scripts and plugin code against a simulated Kindle, and
   runs on GitHub for every change. It includes tests that were checked to fail on each of those
   bugs.

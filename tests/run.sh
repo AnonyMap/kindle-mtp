@@ -102,9 +102,25 @@ expect "version stamped and shown" "$o" "version in umtprd.conf: firmware_versio
 expect "reports the Kindle's own serial" "$o" 'serial in umtprd.conf: serial "G000AB12CD34EF56"' "serial in gadget: G000AB12CD34EF56"
 fresh_plugin; o="$(ns : sh -c "sh ${PLUG}/usbmtp.koplugin/mtp/mtp-start.sh >/dev/null; sed -i '/^GMS_PARAM=/d' /var/tmp/kmtp/state; echo 'GMS_PARAMS=idVendor=6473 removable=Y' >> /var/tmp/kmtp/state; sh ${PLUG}/usbmtp.koplugin/mtp/mtp-stop.sh; cat /tmp/kmtp-test/fake/argv")"
 expect "restores state saved by v0.5 (old one-line format)" "$o" "MTP is OFF" 'insmod <.*/g_mass_storage.ko> <idVendor=6473> <removable=Y>'
+# The stock driver must never come back exporting the storage the Kindle still has mounted.
 LUN=/sys/devices/soc0/ci_hdrc.0/gadget/lun0/file
-fresh_plugin; o="$(ns 'echo /dev/mmcblk0p4 > /sys/module/g_mass_storage/parameters/file' sh -c "sh ${PLUG}/usbmtp.koplugin/mtp/mtp-start.sh >/dev/null; sh ${PLUG}/usbmtp.koplugin/mtp/mtp-stop.sh; echo \"exit=\$? lun=[\$(cat ${LUN})]\"; grep -c '^g_mass_storage ' /proc/modules")"
-expect "restored stock driver never exports the still-mounted storage" "$o" "ejecting it" "MTP is OFF" "exit=0 lun=\[\]" "^1$"
+gms_case() { # gms_case "setup snippet": start, stop twice, report
+    fresh_plugin
+    ns "$1" sh -c "M=${PLUG}/usbmtp.koplugin/mtp; sh \$M/mtp-start.sh >/dev/null
+        sh \$M/mtp-stop.sh; echo \"stop1 exit=\$? lun=[\$(cat ${LUN})] gms=\$(grep -c '^g_mass_storage ' /proc/modules) state=\$(test -f /var/tmp/kmtp/state && echo kept || echo gone)\"
+        sh \$M/mtp-stop.sh; echo \"stop2 exit=\$? lun=[\$(cat ${LUN})]\"; cat /tmp/kmtp-test/fake/argv"
+}
+o="$(gms_case 'echo /dev/mmcblk0p4 > /sys/module/g_mass_storage/parameters/file')"
+expect "a saved file= is never passed back to the stock driver" "$o" "not passing file=/dev/mmcblk0p4" "stop1 exit=0 lun=\[\] gms=1 state=gone"
+expect_not "  (no file= in the reload)" "$o" "g_mass_storage.ko>.*<file="
+o="$(gms_case 'touch $F/gms_exports_on_load')"
+expect "driver exports on load anyway: ejected at once" "$o" "ejecting it" "stop1 exit=0 lun=\[\] gms=1"
+o="$(gms_case 'touch $F/gms_exports_on_load $F/gms_eject_fails')"
+expect "eject fails: driver unloaded again, never 'Safe to unplug'" "$o" "so it was unloaded again" "stop1 exit=1 lun=\[\] gms=0 state=kept" "stop2 exit=1"
+expect_not "  (no 'Safe to unplug')" "$o" "Safe to unplug"
+o="$(gms_case 'touch $F/gms_exports_on_load $F/gms_eject_fails $F/gms_rmmod_fails')"
+expect "eject and unload both fail: reported, and a retry doesn't claim success" "$o" "could not be stopped" "stop1 exit=1 lun=\[/dev/mmcblk0p4\] gms=1 state=kept" "stop2 exit=1"
+expect_not "  (no 'Safe to unplug')" "$o" "Safe to unplug"
 fresh_plugin; o="$(ns 'echo "g_ether 1 0 - Live 0x0" >> $F/proc/modules; sed -i "/^g_mass_storage /d" $F/proc/modules' sh "${PLUG}/usbmtp.koplugin/mtp/mtp-stop.sh")"
 expect "Reset leaves USBNetwork alone" "$o" "MTP is not active. Nothing to do."
 fresh_plugin; o="$(ns : sh "${H}/scenarios/scripts-watcher.sh")"
