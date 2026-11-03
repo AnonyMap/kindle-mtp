@@ -9,7 +9,7 @@ daemon for as long as KOReader runs, because stock USB mass storage would unmoun
 KOReader itself lives on (`/mnt/us`). MTP avoids that: files are copied through the mounted
 filesystem, so nothing gets unmounted.
 
-> **Status: v0.6, early but working.** Confirmed on a Kindle 10th gen (FW 5.16.8) with Bazzite
+> **Status: v0.7, early but working.** Confirmed on a Kindle 10th gen (FW 5.16.8) with Bazzite
 > Linux (KDE): copying books from the file manager, and sending books from Calibre (Flatpak
 > 9.17). Everything else is covered by the simulated-Kindle test suite (see [Tests](#tests)) but
 > not yet confirmed on hardware; see [Not yet tested on hardware](#not-yet-tested-on-hardware).
@@ -69,7 +69,9 @@ storage is switched off, and usbmtp exists to fill that gap.
 - **Menu:** Tools (wrench) → **USB file transfer (MTP)** → **Start USB file transfer**
 - **On plug-in:** set *When plugged into a computer* to **ask first** or **start automatically**
   (default: do nothing). Works on any screen. Wall chargers are ignored: only a computer that
-  actually connects counts.
+  actually connects counts. So is charging resuming with the cable still in (when a full
+  battery tops up, or right after you tap Stop): only a cable that was actually unplugged and
+  plugged back in counts as a new plug-in.
 - **Gesture:** Gesture manager → *General* → **Toggle USB file transfer (MTP)**
 
 While sharing, a dialog offers **Stop** or **Hide** (keep reading). With Hide, a small **ᴍᴛᴘ**
@@ -77,9 +79,13 @@ appears in the reader's status bar while sharing is on; you can turn it off in t
 stops by itself when you unplug, when the Kindle sleeps, or when KOReader exits or crashes. It
 also stops if no computer connects within 10 minutes, so the Kindle can sleep again.
 
-After Stop, it lists the books that arrived, e.g. "2 new file(s) on the Kindle: …". The list
-covers files that appeared in `documents/` during the session, and leaves out KOReader's own
-`.sdr` metadata.
+After Stop, the books that arrived each get an **Open** button (the first five; the rest are in
+the file browser). That covers books that appeared in `documents/` during the session, in any
+format KOReader opens. Other new files (Calibre's `metadata.calibre`, say) are only counted, and
+KOReader's own `.sdr` metadata is left out.
+
+If the Kindle goes to sleep during a transfer, sharing stops. When it wakes with the cable still
+in, the message offers **Start again**.
 
 On the computer:
 - **Linux:** shows up as "Kindle (MTP)" in Dolphin / GNOME Files.
@@ -102,7 +108,7 @@ From v0.5 on, the plugin updates itself from this repo's
   unavailable, so the old code never runs the new scripts.
 
 Before changing anything, it refuses a release that:
-- isn't the latest published release, or doesn't have a plain version number (`v0.6`);
+- isn't the latest published release, or doesn't have a plain version number (`v0.7`);
 - fails its `SHA256SUMS` checksum, or can't be read completely;
 - contains anything other than plain files and folders under `usbmtp.koplugin/` (no `../`, no
   absolute paths, no symlinks);
@@ -254,6 +260,9 @@ These pass in the simulated-Kindle suite but haven't been confirmed on a real de
 - large files (50 MB+), with the 8 KiB USB buffers on the i.MX6;
 - automatic stop when the cable is pulled without tapping Stop;
 - the "ask to start when plugged in" prompt, and wall chargers correctly not triggering it;
+- the plug-in prompt staying quiet when a full battery starts charging again (new in v0.7;
+  depends on when the Kindle's power daemon reports charging, which the suite can only guess);
+- **Open** after Stop, and **Start again** after the Kindle wakes up (new in v0.7);
 - Hide and keep reading during a transfer;
 - stock USB working normally after exiting KOReader;
 - **Check for updates** against the real GitHub (new in v0.5; tested against fake releases);
@@ -290,11 +299,11 @@ sh tools/build-umtprd.sh   # needs gcc-arm-linux-gnueabi; see the script for Baz
 
 1. Bump `usbmtp.koplugin/mtp/VERSION`, run the tests, and merge to `main`.
 2. Make the release, either way:
-   - **On GitHub:** Releases → **Draft a new release** → new tag `v<VERSION>` (e.g. `v0.6`) →
+   - **On GitHub:** Releases → **Draft a new release** → new tag `v<VERSION>` (e.g. `v0.7`) →
      write notes → **Publish**.
    - **From git:**
      ```sh
-     git tag v0.6 && git push origin v0.6
+     git tag v0.7 && git push origin v0.7
      ```
 3. The **Release** workflow runs on the new tag:
    - checks that the tag matches `VERSION`;
@@ -336,7 +345,11 @@ If BusyBox is installed, the scripts run under BusyBox ash, as on the device. Th
 - the Linux 4.1 FunctionFS teardown order (the fake flags the use-after-free ordering);
 - the update flow in the plugin;
 - the list of received books (new files only; old books, `.sdr` metadata and dot-files left
-  out);
+  out), and opening them from the Stop message;
+- the stock driver never exporting the storage the Kindle still has mounted, even if its saved
+  settings would;
+- charging events that aren't plug-ins (battery top-up, re-enumeration after Stop) being
+  ignored;
 - the three plug-in modes, including migrating the old setting;
 - the status-bar marker coming and going with the session;
 - a luacheck pass, which catches e.g. a function used before it's defined;

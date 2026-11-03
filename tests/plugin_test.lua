@@ -4,7 +4,8 @@ local UIManager = {}
 function UIManager:scheduleIn(_, f) tasks[#tasks+1] = f end
 function UIManager:nextTick(f) tasks[#tasks+1] = f end
 function UIManager:unschedule(f) for i=#tasks,1,-1 do if tasks[i]==f then table.remove(tasks,i) end end end
-function UIManager:show(w) shown[#shown+1]=w; note("show "..w.kind.." "..((w.text or w.title or ""):gsub("\n+"," | "):sub(1,140))) end
+local starts = 0
+function UIManager:show(w) shown[#shown+1]=w; if (w.text or ""):find("^Starting USB file transfer") then starts = starts + 1 end; note("show "..w.kind.." "..((w.text or w.title or ""):gsub("\n+"," | "):sub(1,140))) end
 function UIManager:close(w) for i=#shown,1,-1 do if shown[i]==w then table.remove(shown,i) end end end
 function UIManager:forceRePaint() end
 function UIManager:askForRestart(msg) UIManager.restart_msg = msg end
@@ -12,7 +13,7 @@ function UIManager:restartKOReader() UIManager.restarted = true end
 function UIManager:flushSettings() local R = package.loaded["apps/reader/readerui"]; if R and R.instance then R.instance:saveSettings() end end
 function UIManager:getTopmostVisibleWidget() return shown[#shown] end
 local function runTasks(n) for _=1,(n or 1) do local t = tasks; tasks = {}; for _,f in ipairs(t) do f() end end end
-local function widget(kind) return { new = function(_, o) o = o or {}; o.kind = kind; return o end } end
+local function widget(kind) return { new = function(_, o) o = o or {}; o.kind = kind; o.text = o.text or o.title; return o end } end
 local settings = {}
 G_reader_settings = { isTrue=function(_,k) return settings[k]==true end,
   flipNilOrFalse=function(_,k) settings[k] = not settings[k] end, saveSetting=function(_,k,v) settings[k]=v end,
@@ -23,9 +24,17 @@ local broadcasts = {}
 function UIManager:broadcastEvent(ev) broadcasts[#broadcasts+1] = ev.name end
 local notes = {}
 local exited = 0
-local Device = { isKindle=function() return true end, exit=function() exited = exited + 1 end }
+local inhibited = 0
+local Device = { isKindle=function() return true end, exit=function() exited = exited + 1 end,
+  input = { inhibitInputUntil=function() inhibited = inhibited + 1 end } }
 package.preload["device"] = function() return Device end
 package.preload["ui/widget/confirmbox"] = function() return widget("ConfirmBox") end
+package.preload["ui/widget/buttondialog"] = function() return widget("ButtonDialog") end
+package.preload["document/documentregistry"] = function() return { hasProvider=function(_, f)
+  return f:lower():match("%.epub$") or f:lower():match("%.pdf$") or f:lower():match("%.azw3$") or f:lower():match("%.cbz$") end } end
+local opened = {}
+package.preload["apps/filemanager/filemanagerutil"] = function() return { openFile=function(ui, file, _, no_dialog)
+  opened[#opened+1] = { ui = ui, file = file, no_dialog = no_dialog } end } end
 package.preload["ui/widget/infomessage"] = function() return widget("InfoMessage") end
 package.preload["ui/widget/textviewer"] = function() return widget("TextViewer") end
 package.preload["ui/widget/notification"] = function() return { SOURCE_ALWAYS_SHOW=0x8000,
@@ -274,12 +283,21 @@ os.execute("mkdir -p /mnt/base-us/documents/Old.sdr && echo old > /mnt/base-us/d
 local O = menuItem("Start USB file transfer"); O.callback(); fakeProcStat("S")
 os.execute("sleep 1; mkdir -p '/mnt/base-us/documents/Sci-Fi' && echo new > '/mnt/base-us/documents/Sci-Fi/Dune - Frank Herbert.epub'"
   .. " && echo meta > /mnt/base-us/documents/Old.sdr/metadata.epub.lua && echo x > /mnt/base-us/documents/.hidden")
+os.execute("echo cal > /mnt/base-us/documents/metadata.calibre")
 local d = top(); UIManager:close(d); d.cancel_callback()
-check(top().text:find("1 new file%(s%) on the Kindle") and top().text:find("Dune %- Frank Herbert.epub"), "lists the new book")
-check(not top().text:find("Old.epub") and not top().text:find("metadata") and not top().text:find("hidden"), "skips old books, .sdr metadata and dot-files")
-check(top().timeout == nil, "list stays up until dismissed")
+local function rowTexts(w) local t = {}; for _, r in ipairs(w.buttons or {}) do t[#t+1] = r[1].text end; return table.concat(t, " / ") end
+check(top().kind == "ButtonDialog" and top().text:find("1 new book%(s%) on the Kindle") and top().text:find("Plus 1 other file"), "counts the new book, and other files separately")
+check(rowTexts(top()) == "Open Dune - Frank Herbert.epub / Close", "an Open button for the book (not for metadata.calibre)")
+check(not rowTexts(top()):find("Old") and not rowTexts(top()):find("metadata") and not rowTexts(top()):find("hidden"), "skips old books, .sdr metadata and dot-files")
+check(inhibited > 0, "taps made while stopping can't press Open")
+local i0 = #shown
+top().buttons[1][1].callback()
+check(#opened == 1 and opened[1].file == "/mnt/us/documents/Sci-Fi/Dune - Frank Herbert.epub" and opened[1].no_dialog
+  and opened[1].ui == (ReaderUI.instance or package.loaded["apps/filemanager/filemanager"].instance), "Open opens it from wherever we are")
+check(#shown == i0 - 1, "and closes the message")
+os.remove("/mnt/base-us/documents/metadata.calibre")
 local rf = io.open("/tmp/kmtp-test/plugin/usbmtp.koplugin/mtp/received.txt"):read("*a")
-check(rf:find("^/mnt/us/documents/Sci%-Fi/Dune"), "paths given as /mnt/us (what KOReader uses)")
+check(("\n" .. rf):find("\n/mnt/us/documents/Sci%-Fi/Dune"), "paths given as /mnt/us (what KOReader uses)")
 O.callback(); fakeProcStat("S"); d = top(); UIManager:close(d); d.cancel_callback()
 check(top().text:find("Safe to unplug") and not top().text:find("new file") and top().timeout == 4, "nothing new: plain message that times out")
 
@@ -324,5 +342,53 @@ readerS:onResume(); runTasks()
 check(top().text:find("went to sleep") and top().text:find("Stock USB was not restored"), "tells the user stock USB needs a reboot")
 check(top().timeout == nil, "and that message stays up")
 P3._controller:stop() -- clean up (retries the restore)
+
+print("== T. battery tops up with the cable in: not a plug-in")
+CtlM = P3._controller
+local function noPrompt() for _, w in ipairs(shown) do if w.text and w.text:find("Computer detected") then return false end end; return true end
+local function clearShown() for i = #shown, 1, -1 do if shown[i].kind ~= "ReaderUI" then table.remove(shown, i) end end end
+settings.usbmtp_on_plug = "ask"; clearShown()
+udc("configured"); CtlM.plug_armed = false; CtlM.stopped_at = os.time() - 3600
+CtlM:onNotCharging(); runTasks(6)   -- battery full: the cable stays in
+check(CtlM.plug_armed == false, "a full battery isn't an unplug")
+CtlM:onCharging(); runTasks(20)     -- charging resumes later
+check(noPrompt() and not CtlM.active, "no prompt when charging resumes")
+settings.usbmtp_on_plug = "auto"; local s0 = starts
+CtlM:onCharging(); runTasks(20)
+check(starts == s0, "and auto mode doesn't start sharing")
+
+print("== U. Stop with the cable still in (auto mode): stays stopped")
+O.callback(); fakeProcStat("S"); udc("configured"); runTasks()
+d = top(); UIManager:close(d); d.cancel_callback()
+local s1 = starts
+udc("addressed"); CtlM:onCharging(); runTasks(2); udc("configured"); runTasks(20)
+check(starts == s1, "the computer re-enumerating after Stop doesn't restart it")
+
+print("== V. real unplug, then plug back in (event arrives after the computer connected)")
+settings.usbmtp_on_plug = "ask"; clearShown()
+udc("not attached"); CtlM:onNotCharging(); runTasks(6)
+check(CtlM.plug_armed == true, "unplug seen")
+udc("configured"); CtlM:onCharging(); runTasks(3)
+check(not noPrompt(), "prompted")
+clearShown()
+
+print("== W. woke up with the cable still in: Start again")
+O.callback(); fakeProcStat("S"); udc("configured"); runTasks()
+local readerW = P3:new{ ui = mkui(nil) }
+readerW:onSuspend(); readerW:onResume(); runTasks()
+check(top().kind == "ButtonDialog" and top().text:find("went to sleep") and top().buttons[1][1].text == "Start again", "offers to start again")
+top().buttons[1][1].callback(); fakeProcStat("S")
+check(CtlM.active and top().cancel_text == "Stop", "Start again starts it")
+CtlM:stop()
+udc("not attached"); O.callback(); fakeProcStat("S"); readerW:onSuspend(); readerW:onResume(); runTasks()
+check(top().kind == "InfoMessage" and top().timeout == 8, "cable out: plain message")
+
+print("== X. many new books: first five get buttons")
+O.callback(); fakeProcStat("S")
+os.execute("sleep 1; for i in 1 2 3 4 5 6 7; do echo b > /mnt/base-us/documents/Book$i.epub; done")
+d = top(); UIManager:close(d); d.cancel_callback()
+check(top().text:find("7 new book%(s%)") and top().text:find("first 5") and #top().buttons == 6, "5 Open buttons + Close, rest pointed to the file browser")
+top().buttons[6][1].callback()
+check(top() == nil or top().kind ~= "ButtonDialog", "Close closes it")
 
 print(string.format("\n%d passed, %d failed", pass, fail))

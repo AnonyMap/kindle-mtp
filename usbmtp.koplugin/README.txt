@@ -45,7 +45,8 @@ START IT (any of these)
   - Menu: Tools (wrench) > USB file transfer (MTP) > Start USB file transfer
   - Plug in: in that menu, set "When plugged into a computer" to "ask
     first" or "start automatically" (default: do nothing). Works on any
-    screen. Wall chargers are ignored.
+    screen. Wall chargers are ignored, and so is charging that resumes
+    with the cable still in (full battery topping up, or just after Stop).
   - Gesture: Settings > Taps and gestures > Gesture manager > pick a
     gesture > General > "Toggle USB file transfer (MTP)".
 
@@ -56,7 +57,9 @@ WHILE SHARING
            computer connects, and "ᴍᴛᴘ" shows in the reader's status bar
            (can be turned off in the menu). Reopen the dialog from the
            menu or gesture.
-  After Stop, it lists the books that arrived during the session.
+  After Stop, each book that arrived gets an Open button (first five).
+  If the Kindle sleeps during a transfer, sharing stops; if the cable is
+  still in when it wakes, you're offered Start again.
   Linux: "Kindle (MTP)" appears in Dolphin's / GNOME Files' sidebar.
   Mac: use OpenMTP; quit Photos and Image Capture first.
   Windows: should appear in Explorer (untested).

@@ -10,9 +10,16 @@ case "$me" in
     name="$(basename "$1" .ko)"
     [ -e "$F/fail_insmod_$name" ] && exit 1
     grep -q "^$name " "$F/proc/modules" || echo "$name 1000 0 - Live 0x0" >>"$F/proc/modules"
+    # Like the real driver: a file= parameter makes it export that file right away.
+    if [ "$name" = g_mass_storage ]; then
+      for a in "$@"; do
+        case "$a" in file=?*) echo "${a#file=}" >/sys/devices/soc0/ci_hdrc.0/gadget/lun0/file ;; esac
+      done
+    fi
     ;;
   rmmod)
     grep -q "^$1 " "$F/proc/modules" || exit 1
+    [ "$1" = g_mass_storage ] && : >/sys/devices/soc0/ci_hdrc.0/gadget/lun0/file
     sed -i "/^$1 /d" "$F/proc/modules" ;;
 esac
 exit 0

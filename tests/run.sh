@@ -11,6 +11,7 @@
 # (then the scripts run under BusyBox ash + applets, like on the Kindle).
 #   sudo sh tests/run.sh          # BusyBox if available
 #   sudo BB=0 sh tests/run.sh     # force the host's /bin/sh and coreutils
+#   sudo PLUGIN_LOG=/tmp/p.log sh tests/run.sh   # keep the plugin scenarios' full output
 set -u
 
 REPO="$(CDPATH='' cd "$(dirname "$0")/.." && pwd -P)"
@@ -101,6 +102,9 @@ expect "version stamped and shown" "$o" "version in umtprd.conf: firmware_versio
 expect "reports the Kindle's own serial" "$o" 'serial in umtprd.conf: serial "G000AB12CD34EF56"' "serial in gadget: G000AB12CD34EF56"
 fresh_plugin; o="$(ns : sh -c "sh ${PLUG}/usbmtp.koplugin/mtp/mtp-start.sh >/dev/null; sed -i '/^GMS_PARAM=/d' /var/tmp/kmtp/state; echo 'GMS_PARAMS=idVendor=6473 removable=Y' >> /var/tmp/kmtp/state; sh ${PLUG}/usbmtp.koplugin/mtp/mtp-stop.sh; cat /tmp/kmtp-test/fake/argv")"
 expect "restores state saved by v0.5 (old one-line format)" "$o" "MTP is OFF" 'insmod <.*/g_mass_storage.ko> <idVendor=6473> <removable=Y>'
+LUN=/sys/devices/soc0/ci_hdrc.0/gadget/lun0/file
+fresh_plugin; o="$(ns 'echo /dev/mmcblk0p4 > /sys/module/g_mass_storage/parameters/file' sh -c "sh ${PLUG}/usbmtp.koplugin/mtp/mtp-start.sh >/dev/null; sh ${PLUG}/usbmtp.koplugin/mtp/mtp-stop.sh; echo \"exit=\$? lun=[\$(cat ${LUN})]\"; grep -c '^g_mass_storage ' /proc/modules")"
+expect "restored stock driver never exports the still-mounted storage" "$o" "ejecting it" "MTP is OFF" "exit=0 lun=\[\]" "^1$"
 fresh_plugin; o="$(ns 'echo "g_ether 1 0 - Live 0x0" >> $F/proc/modules; sed -i "/^g_mass_storage /d" $F/proc/modules' sh "${PLUG}/usbmtp.koplugin/mtp/mtp-stop.sh")"
 expect "Reset leaves USBNetwork alone" "$o" "MTP is not active. Nothing to do."
 fresh_plugin; o="$(ns : sh "${H}/scenarios/scripts-watcher.sh")"
@@ -131,6 +135,7 @@ expect "restore failure reported" "$o" "could not reload the stock USB driver" "
 
 echo "== plugin (Lua, with stand-in KOReader modules)"
 fresh_plugin; o="$(ns : luajit "${H}/plugin_test.lua")"
+[ -n "${PLUGIN_LOG:-}" ] && printf '%s\n' "$o" >"${PLUGIN_LOG}"  # full output, for debugging
 printf '%s\n' "$o" | grep -E "^FAIL" | sed 's/^/    /'
 expect "plugin scenarios" "$o" " 0 failed"
 printf '%s\n' "$o" | grep -E "passed, [0-9]+ failed" | sed 's/^/    /'

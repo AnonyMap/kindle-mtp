@@ -19,6 +19,7 @@ if not Device:isKindle() then
     return { disabled = true }
 end
 
+local ButtonDialog = require("ui/widget/buttondialog")
 local ConfirmBox = require("ui/widget/confirmbox")
 local Dispatcher = require("dispatcher")
 local Event = require("ui/event")
@@ -47,6 +48,8 @@ local PID_FILE = "/var/tmp/kmtp/umtprd.pid"
 local UDC_STATE = "/sys/class/udc/ci_hdrc.0/state"
 local POLL_SECS = 2
 local NO_HOST_TIMEOUT = 600 -- seconds without a computer before giving up (keeps the Kindle from never sleeping)
+local REPLUG_QUIET_SECS = 30 -- after a Stop, the computer re-enumerating the Kindle isn't a new plug-in
+local MAX_OPEN_BUTTONS = 5
 
 local function readFirstLine(path)
     local f = io.open(path, "r")
@@ -106,6 +109,8 @@ local Ctl = {
     prev_pause_auto_suspend = nil,
     stale_checked = false,
     exit_hooked = false,
+    plug_armed = nil,     -- the cable has been out since the last plug-in we acted on
+    stopped_at = nil,
 }
 
 function Ctl:runScript(script, env)
@@ -243,14 +248,81 @@ function Ctl:receivedFiles()
     return list
 end
 
-local function receivedSummary(list)
-    if #list == 0 then return nil end
-    local lines = { T(_("%1 new file(s) on the Kindle:"), #list) }
-    for i = 1, math.min(#list, 5) do
-        lines[#lines + 1] = "• " .. (list[i]:match("([^/]+)$") or list[i])
+local function baseName(path)
+    return path:match("([^/]+)$") or path
+end
+
+-- Split what arrived into books KOReader can open and anything else (Calibre's
+-- metadata files, covers, ...).
+local function splitBooks(list)
+    local ok, DocumentRegistry = pcall(require, "document/documentregistry")
+    local books, others = {}, 0
+    for _, f in ipairs(list) do
+        if not ok or DocumentRegistry:hasProvider(f) then
+            books[#books + 1] = f
+        else
+            others = others + 1
+        end
     end
-    if #list > 5 then lines[#lines + 1] = T(_("…and %1 more"), #list - 5) end
-    return table.concat(lines, "\n")
+    return books, others
+end
+
+-- The books themselves are listed as Open buttons (see showResult), so the text
+-- only names the ones that didn't get a button.
+local function receivedSummary(books, others)
+    local lines = {}
+    if #books > 0 then
+        lines[1] = T(_("%1 new book(s) on the Kindle."), #books)
+        if #books > MAX_OPEN_BUTTONS then
+            lines[#lines + 1] = T(_("The first %1 are below; find the rest in the file browser."), MAX_OPEN_BUTTONS)
+        end
+    end
+    if others > 0 then
+        lines[#lines + 1] = #books > 0 and T(_("Plus %1 other file(s)."), others)
+                                        or T(_("%1 new file(s) on the Kindle, none of them books."), others)
+    end
+    return #lines > 0 and table.concat(lines, "\n") or nil
+end
+
+-- Open a book from wherever we are (file browser or another book).
+local function openFile(file)
+    local ReaderUI = package.loaded["apps/reader/readerui"]
+    local FileManager = package.loaded["apps/filemanager/filemanager"]
+    local ui = (ReaderUI and ReaderUI.instance) or (FileManager and FileManager.instance)
+    local ok, filemanagerutil = pcall(require, "apps/filemanager/filemanagerutil")
+    if ui and ok and filemanagerutil.openFile then
+        filemanagerutil.openFile(ui, file, nil, true)
+    else -- older KOReader
+        (ReaderUI or require("apps/reader/readerui")):showReader(file)
+    end
+end
+
+-- The message after a session ends, with buttons to open the books that just
+-- arrived and, if the cable is still in, to start sharing again.
+-- opts: restart (offer "Start again"), timeout (only used when there are no buttons)
+function Ctl:showResult(text, books, opts)
+    opts = opts or {}
+    local rows, dlg = {}, nil
+    local function close()
+        if dlg then UIManager:close(dlg) end
+        dlg = nil
+    end
+    if opts.restart then
+        rows[#rows + 1] = {{ text = _("Start again"), callback = function() close(); self:start() end }}
+    end
+    for i = 1, math.min(#books, MAX_OPEN_BUTTONS) do
+        local file = books[i]
+        rows[#rows + 1] = {{ text = T(_("Open %1"), baseName(file)), callback = function() close(); openFile(file) end }}
+    end
+    if #rows == 0 then
+        UIManager:show(InfoMessage:new{ text = text, timeout = opts.timeout })
+        return
+    end
+    rows[#rows + 1] = {{ text = _("Close"), callback = close }}
+    dlg = ButtonDialog:new{ title = text, buttons = rows }
+    -- Like ConfirmBox's flush_events_on_show: taps made while stopping mustn't press a button.
+    if Device.input and Device.input.inhibitInputUntil then Device.input:inhibitInputUntil(true) end
+    UIManager:show(dlg)
 end
 
 -- quiet: no popups (exit / sleep)
@@ -267,6 +339,9 @@ function Ctl:stop(reason, quiet)
     self.connected = false
     self.hidden = false
     self.book = nil
+    self.stopped_at = os.time()
+    -- Cable still in: only pulling it makes the next Charging event a plug-in.
+    self.plug_armed = udcState() == "not attached"
     self:updateFooter()
 
     if quiet then return ok end
@@ -279,20 +354,22 @@ function Ctl:stop(reason, quiet)
         end)
     end
 
-    local text
+    local text, summary
+    local books = {}
     if ok then
-        text = (reason and (reason .. "\n\n") or "") .. _("USB file transfer stopped. Safe to unplug.")
-        local summary = receivedSummary(self:receivedFiles())
-        if summary then text = text .. "\n\n" .. summary end
+        local others
+        books, others = splitBooks(self:receivedFiles())
+        summary = receivedSummary(books, others)
+        text = (reason and (reason .. "\n\n") or "") .. _("USB file transfer stopped. Safe to unplug.") ..
+               (summary and ("\n\n" .. summary) or "")
     else
         local err, not_restored = self:lastRunResult()
         text = _("Problem while stopping USB file transfer.") .. "\n\n" .. (err or "") .. "\n\n" ..
                (not_restored and _("Stock USB was not restored. Reboot the Kindle before using USB.")
                               or _("If USB misbehaves, reboot the Kindle."))
     end
-    -- Leave a list of new books up until dismissed; a plain "stopped" can time out.
-    local has_new = ok and #self:receivedFiles() > 0
-    UIManager:show(InfoMessage:new{ text = text, timeout = (ok and not has_new) and 4 or nil })
+    -- Leave news of new files up until dismissed; a plain "stopped" can time out.
+    self:showResult(text, books, { timeout = (ok and not summary) and 4 or nil })
     return ok
 end
 
@@ -461,10 +538,25 @@ local function onPlugMode()
     return G_reader_settings:isTrue("usbmtp_prompt_on_plug") and "ask" or "off"
 end
 
+-- Charging events aren't plug-in events. Charging also stops when the battery is
+-- full and resumes later with the cable still in, and our own Stop makes the
+-- computer re-enumerate the Kindle. Neither may pop up the prompt mid-book or
+-- restart sharing behind the user's back, so a Charging event only counts when
+-- the cable was seen out since the last plug-in (plug_armed). If that was missed,
+-- it still counts unless the computer is already connected (nothing was
+-- re-plugged) or we only just stopped.
 function Ctl:onCharging()
     local mode = onPlugMode()
     if mode == "off" then return end
     if self.active or self._probing then return end
+    local st = udcState()
+    if st == "not attached" then self.plug_armed = true end -- the cable is only just in
+    if not self.plug_armed and (st == "configured"
+            or (self.stopped_at and os.time() - self.stopped_at < REPLUG_QUIET_SECS)) then
+        logger.info("usbmtp: charging event with the cable already in; not a plug-in (USB:", st, ")")
+        return
+    end
+    self.plug_armed = false
     self._probing = true
     local tries = 0
     self._probe = function()
@@ -497,6 +589,18 @@ end
 function Ctl:onNotCharging()
     if self._probe then UIManager:unschedule(self._probe) end
     self._probing = false
+    -- Cable pulled, or battery full? Watch the USB port for a few seconds.
+    if self._unplug_check then UIManager:unschedule(self._unplug_check) end
+    local tries = 0
+    self._unplug_check = function()
+        tries = tries + 1
+        if udcState() == "not attached" then
+            self.plug_armed = true
+        elseif tries < 5 then
+            UIManager:scheduleIn(1, self._unplug_check)
+        end
+    end
+    self._unplug_check()
 end
 
 function Ctl:onSuspend()
@@ -514,8 +618,13 @@ function Ctl:onResume()
             local FileManager = package.loaded["apps/filemanager/filemanager"]
             if FileManager and FileManager.instance then FileManager.instance:onRefresh() end
             local text = _("USB file transfer was stopped because the Kindle went to sleep.\n\nIf a file was being copied at that moment, copy it again.")
+            local books, summary = {}, nil
+            local st = udcState()
+            local cable_in = ok and st ~= "not attached" and st ~= "unknown"
             if ok then
-                local summary = receivedSummary(self:receivedFiles())
+                local others
+                books, others = splitBooks(self:receivedFiles())
+                summary = receivedSummary(books, others)
                 if summary then text = text .. "\n\n" .. summary end
             else
                 local err, not_restored = self:lastRunResult()
@@ -523,7 +632,7 @@ function Ctl:onResume()
                        (not_restored and _("Stock USB was not restored. Reboot the Kindle before using USB.")
                                       or _("If USB misbehaves, reboot the Kindle."))
             end
-            UIManager:show(InfoMessage:new{ text = text, timeout = ok and 8 or nil })
+            self:showResult(text, books, { restart = cable_in, timeout = (ok and not summary) and 8 or nil })
         end)
     end
 end
@@ -571,6 +680,9 @@ function UsbMtp:init()
         Ctl.version = readFirstLine(Ctl.mtp_dir .. "/VERSION") or "?"
         -- We loaded, so any update that just happened worked: drop the backup.
         pcall(Updater.cleanupAfterUpdate, root)
+        -- Started with the cable in: wait for it to come out before acting on a
+        -- Charging event (it may just be the battery topping up).
+        Ctl.plug_armed = udcState() == "not attached"
     end
     Ctl:hookExit()
 

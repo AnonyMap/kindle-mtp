@@ -259,10 +259,31 @@ teardown_gadget() {
 }
 
 reload_gms() {
-    # reload_gms [params...]  -> 0 if g_mass_storage is loaded afterwards
-    insmod "${MODDIR}/legacy/g_mass_storage.ko" "$@" 2>/dev/null && return 0
+    # reload_gms [params...]  -> 0 if g_mass_storage is loaded (and exporting nothing) afterwards
+    if insmod "${MODDIR}/legacy/g_mass_storage.ko" "$@" 2>/dev/null; then
+        gms_unexport
+        return
+    fi
     [ $# -gt 0 ] && log "warning: reload with saved params failed, retrying with defaults"
-    modprobe g_mass_storage 2>/dev/null || insmod "${MODDIR}/legacy/g_mass_storage.ko" 2>/dev/null
+    modprobe g_mass_storage 2>/dev/null || insmod "${MODDIR}/legacy/g_mass_storage.ko" 2>/dev/null || return 1
+    gms_unexport
+}
+
+# Put the stock driver back exactly as we found it: loaded, exporting nothing
+# (preflight refuses to start otherwise). The storage is still mounted here, so if
+# the module's own parameters made it export a partition on load, the computer
+# and the Kindle would both write the same FAT filesystem and corrupt it. Run
+# right after loading, before a computer has had time to even enumerate it.
+gms_unexport() {
+    gms_exporting || return 0
+    log "warning: the reloaded stock USB driver exported the storage while the Kindle has it mounted; ejecting it"
+    for _f in /sys/class/udc/${UDC_NAME}/device/gadget/lun*/file $(find /sys/devices -path '*/gadget/lun*/file' 2>/dev/null); do
+        [ -w "${_f}" ] && echo "" >"${_f}" 2>/dev/null
+    done
+    gms_exporting || return 0
+    log "ERROR: could not eject the storage from the stock USB driver, so it was unloaded again. Unplug the cable and reboot the Kindle."
+    rmmod g_mass_storage 2>/dev/null
+    return 1
 }
 
 # Undo everything start did, in reverse order. Safe to run repeatedly and after partial starts.
