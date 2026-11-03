@@ -114,7 +114,10 @@ save_gms_params() {
 
 # Reload g_mass_storage with the parameters save_gms_params recorded.
 # Values with spaces are passed as name="value", the form the kernel's
-# module-parameter parser understands.
+# module-parameter parser understands. Never file=: it would export a partition
+# on load while the Kindle still has it mounted, and the state we found had
+# nothing exported anyway (preflight refuses to start otherwise; volumd sets the
+# backing file itself when it shares the storage).
 reload_saved_gms() {
     set --
     if grep -q '^GMS_PARAM=' "${KMTP_STATE}" 2>/dev/null; then
@@ -124,6 +127,7 @@ reload_saved_gms() {
                     _kv="${_l#GMS_PARAM=}"
                     _k="${_kv%%=*}"
                     _v="${_kv#*=}"
+                    [ "${_k}" = file ] && { log "not passing file=${_v} (the storage is still mounted here)"; continue; }
                     case "${_v}" in
                         *" "*) set -- "$@" "${_k}=\"${_v}\"" ;;
                         *) set -- "$@" "${_k}=${_v}" ;;
@@ -134,8 +138,12 @@ reload_saved_gms() {
     else
         # State written by v0.5 or earlier: one space-separated line.
         set -f
-        # shellcheck disable=SC2046
-        set -- $(state_get GMS_PARAMS)
+        for _kv in $(state_get GMS_PARAMS); do
+            case "${_kv}" in
+                file=*) log "not passing ${_kv} (the storage is still mounted here)" ;;
+                *) set -- "$@" "${_kv}" ;;
+            esac
+        done
         set +f
     fi
     log "reloading g_mass_storage $*"
@@ -259,10 +267,39 @@ teardown_gadget() {
 }
 
 reload_gms() {
-    # reload_gms [params...]  -> 0 if g_mass_storage is loaded afterwards
-    insmod "${MODDIR}/legacy/g_mass_storage.ko" "$@" 2>/dev/null && return 0
+    # reload_gms [params...]  -> 0 if g_mass_storage is loaded (and exporting nothing) afterwards
+    if insmod "${MODDIR}/legacy/g_mass_storage.ko" "$@" 2>/dev/null; then
+        gms_unexport
+        return
+    fi
     [ $# -gt 0 ] && log "warning: reload with saved params failed, retrying with defaults"
-    modprobe g_mass_storage 2>/dev/null || insmod "${MODDIR}/legacy/g_mass_storage.ko" 2>/dev/null
+    modprobe g_mass_storage 2>/dev/null || insmod "${MODDIR}/legacy/g_mass_storage.ko" 2>/dev/null || return 1
+    gms_unexport
+}
+
+# Safety net: the stock driver must come back exactly as we found it, loaded and
+# exporting nothing. The storage is still mounted here, so if the reloaded driver
+# exported it anyway, the computer and the Kindle would both write the same FAT
+# filesystem and corrupt it. Runs right after loading, before a computer has had
+# time to enumerate the gadget; the direct sysfs path first, since the full
+# /sys/devices walk is slow on this CPU. Returns 1 unless nothing is exported.
+gms_unexport() {
+    gms_exporting || return 0
+    log "warning: the reloaded stock USB driver exported the storage while the Kindle has it mounted; ejecting it"
+    for _f in /sys/class/udc/${UDC_NAME}/device/gadget/lun*/file; do
+        [ -e "${_f}" ] && echo "" >"${_f}" 2>/dev/null
+    done
+    gms_exporting || return 0
+    for _f in $(find /sys/devices -path '*/gadget/lun*/file' 2>/dev/null); do
+        echo "" >"${_f}" 2>/dev/null
+    done
+    gms_exporting || return 0
+    if rmmod g_mass_storage 2>/dev/null; then
+        log "ERROR: could not eject the storage from the stock USB driver, so it was unloaded again. Unplug the cable and reboot the Kindle."
+    else
+        log "ERROR: the stock USB driver is sharing the storage while the Kindle has it mounted, and could not be stopped. Eject it on the computer, unplug the cable and reboot the Kindle."
+    fi
+    return 1
 }
 
 # Undo everything start did, in reverse order. Safe to run repeatedly and after partial starts.
@@ -278,11 +315,16 @@ teardown() {
 
     # Put the stock USB driver back the way we found it.
     if [ "$(state_get GMS_WAS_LOADED)" = "yes" ] && ! mod_loaded g_mass_storage; then
-        reload_saved_gms
-        if ! mod_loaded g_mass_storage; then
+        if ! reload_saved_gms || ! mod_loaded g_mass_storage; then
+            # (gms_unexport has already logged it if the driver is up but exporting)
             log "ERROR: could not reload the stock USB driver. Reboot the Kindle to restore stock USB."
             _restore_ok=1
         fi
+    fi
+    # Also on a retry where the driver is already back: it must not be exporting the
+    # storage. (Unless volumd runs again and is managing USB itself.)
+    if [ ${_restore_ok} -eq 0 ] && [ "$(volumd_state)" != running ] && ! gms_unexport; then
+        _restore_ok=1
     fi
 
     [ ${_restore_ok} -eq 0 ] && rm -f "${KMTP_STATE}"
