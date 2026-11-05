@@ -53,8 +53,6 @@ local POLL_SECS = 2
 local NO_HOST_TIMEOUT = 600 -- seconds without a computer before giving up (keeps the Kindle from never sleeping)
 local REPLUG_QUIET_SECS = 30 -- after a Stop, the computer re-enumerating the Kindle isn't a new plug-in
 local MAX_OPEN_BUTTONS = 5
-local DRIVE_SIZES = { 64, 256, 512, 1024, 2048 } -- MB
-local DRIVE_DEFAULT_MB = 256
 
 -- How to share: "mtp" (default) or "drive" (plain USB drive, any computer).
 local function connMode()
@@ -63,14 +61,6 @@ end
 
 local function modeLabel(mode)
     return mode == "drive" and _("USB drive") or _("MTP")
-end
-
-local function driveMB()
-    local v = tonumber(G_reader_settings:readSetting("usbmtp_drive_mb"))
-    for _, mb in ipairs(DRIVE_SIZES) do
-        if mb == v then return v end
-    end
-    return DRIVE_DEFAULT_MB
 end
 
 local function readFirstLine(path)
@@ -163,7 +153,6 @@ local Ctl = {
     stopped_at = nil,
     mode = nil,           -- "mtp" or "drive", for the running session
     lun = nil,            -- drive mode: sysfs file that's empty once the computer ejected it
-    preparing = false,    -- drive mode: creating the image
     import_pending = false, -- drive mode: stopped while asleep, import on wake
 }
 
@@ -251,7 +240,6 @@ function Ctl:start(mode)
         self:showDialog()
         return
     end
-    if self.preparing then return end
     if self.update_pending then
         UIManager:show(InfoMessage:new{
             text = T(_("Restart KOReader to finish updating to v%1 first."), self.update_pending),
@@ -263,18 +251,22 @@ function Ctl:start(mode)
         return
     end
     if mode == "drive" and not fileExists(Drive.IMAGE) then
-        self:prepareDrive(function() self:start("drive") end)
-        return
+        -- First use: a few seconds per 100 MB on this eMMC.
+        local busy = showBusy(T(_("Preparing the USB drive (first time only, %1 MB)…"), Drive.SIZE_MB))
+        local ok, err = Drive.create(Drive.IMAGE)
+        UIManager:close(busy)
+        if not ok then
+            UIManager:show(InfoMessage:new{
+                icon = "notice-warning",
+                text = _("Could not prepare the USB drive.") .. "\n\n" .. tostring(err),
+            })
+            return
+        end
     end
 
     -- Get everything KOReader holds in memory onto disk before the computer looks.
     -- (FlushSettings also makes an open ReaderUI save the book's settings.)
     UIManager:flushSettings()
-
-    -- Files left from a session that ended without importing (e.g. KOReader exited).
-    -- Counted now: once shared, only the computer may touch the image.
-    local pending = mode == "drive" and select(2, pcall(Drive.pending, Drive.IMAGE)) or nil
-    if type(pending) ~= "number" then pending = nil end
 
     local busy = showBusy(_("Starting USB file transfer…"))
     -- The scripts' crash watcher stops MTP if this process dies without doing it.
@@ -299,7 +291,6 @@ function Ctl:start(mode)
     self.active = true
     self.mode = mode
     self.lun = mode == "drive" and stateValue("DRIVE_LUN") or nil
-    self.drive_pending = pending
     self.connected = false
     self.cable_seen = false
     self.started_at = os.time()
@@ -310,44 +301,6 @@ function Ctl:start(mode)
     self:updateFooter()
     self:showDialog()
     self:schedulePoll()
-end
-
--- Drive mode, first use (or after a size change): create the image, a few MB at a
--- time so KOReader stays responsive, then call done().
-function Ctl:prepareDrive(done)
-    self.preparing = true
-    local step = Drive.creator(Drive.IMAGE, driveMB())
-    local msg, shown = nil, -1
-    local function show(pct)
-        if msg then UIManager:close(msg) end
-        msg = InfoMessage:new{
-            text = T(_("Preparing the %1 MB USB drive (first time only)… %2 %"), driveMB(), pct),
-            dismissable = false,
-        }
-        UIManager:show(msg)
-        shown = pct
-    end
-    local function tick()
-        local r, err = step()
-        if r == true or not r then
-            if msg then UIManager:close(msg) end
-            self.preparing = false
-            if r then
-                done()
-            else
-                UIManager:show(InfoMessage:new{
-                    icon = "notice-warning",
-                    text = _("Could not prepare the USB drive.") .. "\n\n" .. tostring(err),
-                })
-            end
-            return
-        end
-        local pct = math.floor(r * 10) * 10
-        if pct > shown then show(pct) end
-        UIManager:scheduleIn(0.01, tick)
-    end
-    show(0)
-    UIManager:nextTick(tick)
 end
 
 -- Files that arrived during the last session (written by mtp-stop.sh).
@@ -418,17 +371,13 @@ end
 
 -- The message after a session ends, with buttons to open the books that just
 -- arrived and, if the cable is still in, to start sharing again.
--- opts: restart (offer "Start again"), buttons (more {text=, callback=} first),
--- timeout (only used when there are no buttons)
+-- opts: restart (offer "Start again"), timeout (only used when there are no buttons)
 function Ctl:showResult(text, books, opts)
     opts = opts or {}
     local rows, dlg = {}, nil
     local function close()
         if dlg then UIManager:close(dlg) end
         dlg = nil
-    end
-    for _i, b in ipairs(opts.buttons or {}) do
-        rows[#rows + 1] = {{ text = b.text, callback = function() close(); b.callback() end }}
     end
     if opts.restart then
         rows[#rows + 1] = {{ text = _("Start again"), callback = function() close(); self:start() end }}
@@ -450,27 +399,17 @@ end
 
 -- Drive mode, after the computer let go of the image: copy what's on it into
 -- documents/, then empty it if everything made it. Returns the books added, a
--- summary for the message, and extra buttons for it (Add anyway, for a drive the
--- computer didn't eject). allow_dirty: the user said Add anyway.
-function Ctl:importDrive(allow_dirty)
-    if not fileExists(Drive.IMAGE) then return {}, nil, nil end
+-- summary for the message, and whether it was left for a proper eject.
+function Ctl:importDrive()
+    if not fileExists(Drive.IMAGE) then return {}, nil, false end
     local busy = showBusy(_("Adding the books from the USB drive…"))
-    local last = os.time()
     self:keepAwake(true)
     local okc, res, err, why = pcall(Drive.import, Drive.IMAGE, {
-        allow_dirty = allow_dirty,
         before_replace = function(us_path)
             -- A newer copy of the open book: close it before it's replaced under KOReader.
             -- (vfat ignores case, so "dune.epub" open is replaced by "Dune.epub".)
             local r = openReader()
             if r and r.document.file:lower() == us_path:lower() then closeReader(r) end
-        end,
-        progress = function(i, n)
-            if n > 3 and os.time() - last >= 2 then
-                last = os.time()
-                UIManager:close(busy)
-                busy = showBusy(T(_("Adding the books from the USB drive… %1 of %2"), i, n))
-            end
         end,
     })
     if not okc then res, err = nil, tostring(res) end -- (a malformed drive mustn't crash KOReader)
@@ -479,14 +418,10 @@ function Ctl:importDrive(allow_dirty)
     self:keepAwake(false)
     UIManager:close(busy)
     if not res then
-        if why == Drive.DIRTY then
-            return {}, _("The USB drive wasn't ejected on the computer, so the last book copied may be incomplete. Nothing was added yet.\n\nStart again and eject it on the computer (Finder: the eject button), or add what's there anyway (books already on the Kindle won't be replaced)."),
-                { { text = _("Add anyway"), callback = function()
-                    local books, summary, extra = self:importDrive(true)
-                    self:showResult(summary or "", books, { buttons = extra })
-                end } }
+        if why == "dirty" then
+            return {}, _("The USB drive wasn't ejected on the computer, so the last book copied may be incomplete. Nothing was added; the books are still on the drive.\n\nStart again and eject it on the computer (Finder: the eject button) to add them."), true
         end
-        return {}, T(_("Couldn't read the USB drive: %1\nNothing was copied; whatever is on it is still there. (If the computer reformatted it: Menu > USB file transfer > Connection > Erase the USB drive.)"), err), nil
+        return {}, T(_("Couldn't read the USB drive: %1\nNothing was copied. (If the computer reformatted it: Menu > USB file transfer > Connection > Erase the USB drive.)"), err), false
     end
     local books, others = splitBooks(res.added)
     local lines = {}
@@ -506,7 +441,7 @@ function Ctl:importDrive(allow_dirty)
     elseif not wiped then
         lines[#lines + 1] = T(_("(The USB drive couldn't be emptied: %1)"), tostring(werr))
     end
-    return books, table.concat(lines, "\n"), nil
+    return books, table.concat(lines, "\n"), false
 end
 
 -- quiet: no popups (exit / sleep)
@@ -547,12 +482,12 @@ function Ctl:stop(reason, quiet)
         end)
     end
 
-    local text, summary, extra
+    local text, summary, not_ejected
     local books = {}
     if ok then
         if was_drive then
             -- (Only once the stock driver is back: the image is closed by then.)
-            books, summary, extra = self:importDrive()
+            books, summary, not_ejected = self:importDrive()
         else
             local others
             books, others = splitBooks(self:receivedFiles())
@@ -569,8 +504,8 @@ function Ctl:stop(reason, quiet)
     -- Leave news of new files up until dismissed; a plain "stopped" can time out.
     -- (Not ejected: a computer still connected can get it back to eject it properly.)
     local st = udcState()
-    self:showResult(text, books, { timeout = (ok and not summary) and 4 or nil, buttons = extra,
-                                   restart = extra ~= nil and (st == "configured" or st == "suspended") })
+    self:showResult(text, books, { timeout = (ok and not summary) and 4 or nil,
+                                   restart = not_ejected and (st == "configured" or st == "suspended") })
     return ok
 end
 
@@ -591,9 +526,7 @@ function Ctl:dialogText()
         local state = self.connected
             and _("Connected. On your computer, copy books onto the \"TO KINDLE\" drive, then eject it: the Kindle adds them to its library.")
             or _("Waiting for the computer…\nA drive called \"TO KINDLE\" will appear on it.")
-        local pending = (self.drive_pending or 0) > 0
-            and ("\n\n" .. T(_("%1 file(s) from last time are still on it; they'll be added too."), self.drive_pending)) or ""
-        return _("USB drive is on.") .. "\n\n" .. state .. pending .. "\n\n" ..
+        return _("USB drive is on.") .. "\n\n" .. state .. "\n\n" ..
                _("Eject the drive on the computer before tapping Stop or unplugging, or the last book copied may be lost. Hide this to keep reading meanwhile.")
     end
     local state
@@ -786,17 +719,11 @@ function Ctl:onCharging()
                 self:start()
                 return
             end
-            local cur = connMode()
-            local other = cur == "drive" and "mtp" or "drive"
             UIManager:show(ConfirmBox:new{
-                text = T(_("Computer detected.\n\nStart USB file transfer (%1)?"), modeLabel(cur)),
+                text = T(_("Computer detected.\n\nStart USB file transfer (%1)?"), modeLabel(connMode())),
                 ok_text = _("Start"),
                 flush_events_on_show = true,
-                ok_callback = function() UIManager:nextTick(function() self:start(cur) end) end,
-                other_buttons = {{{
-                    text = T(_("Use %1 this time"), modeLabel(other)),
-                    callback = function() UIManager:nextTick(function() self:start(other) end) end,
-                }}},
+                ok_callback = function() UIManager:nextTick(function() self:start() end) end,
             })
         elseif tries < 16 then
             UIManager:scheduleIn(0.5, self._probe)
@@ -845,13 +772,13 @@ function Ctl:onResume()
         local ok = self.sleep_stop_ok
         UIManager:scheduleIn(1, function()
             local text = _("USB file transfer was stopped because the Kindle went to sleep.\n\nIf a file was being copied at that moment, copy it again.")
-            local books, summary, extra = {}, nil, nil
+            local books, summary = {}, nil
             local st = udcState()
             -- Only a computer that's (still) connected; on a charger it would just wait.
             local cable_in = ok and (st == "configured" or st == "suspended")
             if ok and self.import_pending then
                 self.import_pending = false
-                books, summary, extra = self:importDrive()
+                books, summary = self:importDrive()
                 if summary then text = text .. "\n\n" .. summary end
             elseif ok then
                 local others
@@ -867,8 +794,7 @@ function Ctl:onResume()
             -- (After the import, so the new books show.)
             local FileManager = package.loaded["apps/filemanager/filemanager"]
             if FileManager and FileManager.instance then FileManager.instance:onRefresh() end
-            self:showResult(text, books, { restart = cable_in, buttons = extra,
-                                           timeout = (ok and not summary) and 8 or nil })
+            self:showResult(text, books, { restart = cable_in, timeout = (ok and not summary) and 8 or nil })
         end)
     end
 end
@@ -1082,14 +1008,14 @@ function UsbMtp:showStatus()
     UIManager:show(TextViewer:new{ title = _("USB file transfer status"), text = out })
 end
 
--- Connection type, and the USB drive's size / removal.
+-- Connection type, and removing the USB drive.
 function UsbMtp:connectionMenu()
     local function erase(touchmenu_instance)
         Drive.erase(Drive.IMAGE)
         if touchmenu_instance then touchmenu_instance:updateItems() end
     end
     -- Not while a session (ours, or one left by a crash) may still be sharing it.
-    local function idle() return not Ctl.active and not Ctl.preparing and not fileExists(STATE_FILE) end
+    local function idle() return not Ctl.active and not fileExists(STATE_FILE) end
     -- Run `action` unless the drive holds files that weren't imported yet, or
     -- can't be read; then ask.
     local function unlessPending(what, action)
@@ -1104,23 +1030,6 @@ function UsbMtp:connectionMenu()
         end
         if not text then return action() end
         UIManager:show(ConfirmBox:new{ text = text, ok_text = what, ok_callback = action })
-    end
-    local sizes = {}
-    for _i, mb in ipairs(DRIVE_SIZES) do -- (not "_": that's gettext, used below)
-        sizes[#sizes + 1] = {
-            text = mb >= 1024 and T(_("%1 GB"), mb / 1024) or T(_("%1 MB"), mb),
-            radio = true,
-            checked_func = function() return driveMB() == mb end,
-            enabled_func = idle,
-            callback = function(touchmenu_instance)
-                if driveMB() == mb then return end
-                local function apply()
-                    G_reader_settings:saveSetting("usbmtp_drive_mb", mb)
-                    erase(touchmenu_instance) -- recreated at the new size on next start
-                end
-                unlessPending(_("Resize"), apply)
-            end,
-        }
     end
     return {
         text_func = function() return T(_("Connection: %1"), modeLabel(connMode())) end,
@@ -1139,10 +1048,6 @@ function UsbMtp:connectionMenu()
                 checked_func = function() return connMode() == "drive" end,
                 callback = function() G_reader_settings:saveSetting("usbmtp_mode", "drive") end,
                 separator = true,
-            },
-            {
-                text_func = function() return T(_("USB drive size: %1 MB"), driveMB()) end,
-                sub_item_table = sizes,
             },
             {
                 text_func = function()

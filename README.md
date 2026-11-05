@@ -19,6 +19,27 @@ gets a separate disk image, never the storage the Kindle has mounted.
 > **This plugin was written by AI.** I'm sceptical of AI-made software myself, so you should know
 > before you install it. Details in [How this was made](#how-this-was-made).
 
+## On a Mac
+
+macOS can't talk to MTP devices on its own, so use the plugin's **USB drive** connection instead.
+It needs nothing installed on the Mac.
+
+1. [Install the plugin](#install) on the Kindle, then start KOReader.
+2. On the Kindle: Tools (wrench) → **USB file transfer** → **Connection** → **USB drive**.
+   (Once. It's remembered.)
+3. Plug the Kindle into the Mac and tap **Start USB file transfer**. The first time, the Kindle
+   takes a moment to prepare the drive.
+4. A drive called **TO KINDLE** appears in Finder. Drag your books onto it.
+5. **Eject TO KINDLE** in Finder (the ⏏ button next to it). The Kindle then adds the books to
+   its library and offers to open them.
+
+Always eject before unplugging. If you don't, the Kindle leaves the books on the drive and asks
+you to start again and eject. That way a half-copied book never replaces a good one.
+
+The drive only adds books: it can't show or delete what's already on the Kindle. For that, use an
+MTP app such as [OpenMTP](https://openmtp.ganeshrvel.com/) with the **MTP** connection (quit
+Photos and Image Capture first). More in [USB drive mode](#usb-drive-mode-mac-windows-no-app).
+
 ## Supported devices
 
 | Device | Firmware | Kernel | Status |
@@ -76,8 +97,7 @@ storage is switched off, and usbmtp exists to fill that gap.
 - **Gesture:** Gesture manager → *General* → **Toggle USB file transfer**
 
 **Connection** in the same menu picks how the computer sees the Kindle: **MTP** (default) or
-**USB drive** (see [below](#usb-drive-mode-mac-windows-no-app)). The plug-in prompt also offers
-the other one for that time only.
+**USB drive** (see [below](#usb-drive-mode-mac-windows-no-app)).
 
 While sharing, a dialog offers **Stop** or **Hide** (keep reading). With Hide, a small **ᴍᴛᴘ**
 appears in the reader's status bar while sharing is on; you can turn it off in the menu. Sharing
@@ -112,8 +132,7 @@ look like one. Set **Connection → USB drive**, then start as usual:
 4. The Kindle notices, stops sharing, copies the books into `documents/`, empties the drive,
    and offers to open them.
 
-What it is: a disk image, `koreader/usbmtp-drive.img` (256 MB by default; **Connection → USB
-drive size**), formatted FAT16. The Kindle's own storage stays mounted the whole time, so
+What it is: a 256 MB disk image, `koreader/usbmtp-drive.img`, formatted FAT16. The Kindle's own storage stays mounted the whole time, so
 KOReader keeps running, and the computer can't see or delete the books already on the Kindle.
 It's one-way, for adding books. Use MTP to manage what's there.
 
@@ -127,16 +146,17 @@ Details:
   everything made it. Empty files (what an interrupted copy leaves) and hidden files are skipped
   and counted. Two files that would land on the same name get "(2)".
 - **Not ejected?** If you unplug, tap **Stop** or the Kindle sleeps while the computer still has
-  the drive open, nothing is added: a file can have its full size on the drive with its contents
-  never written. The Kindle tells you and offers **Start again** (so you can eject it properly)
-  or **Add anyway**, which never replaces a book already on the Kindle. It knows from the marks
-  Windows, macOS and Linux leave on a FAT drive while it's in use.
+  the drive open, nothing is added, because a file can have its full size on the drive with its
+  contents never written. The books stay on the drive. Tap **Start again**, then eject it on the
+  computer. The Kindle can tell from the marks Windows, macOS and Linux leave on a FAT drive while
+  it's in use.
 - If KOReader exits before the drive is ejected, the books wait on it and are added after the
   next session.
 - Calibre doesn't recognise it as a Kindle. Use *Connect/share → Connect to folder* on the
   TO KINDLE drive, or use MTP with Calibre.
 - If the computer offers to reformat the drive, don't. If it was reformatted anyway, the Kindle
-  says it can't read it; **Erase the USB drive** fixes that.
+  says it can't read it, and **Erase the USB drive** fixes that. (The Kindle only reads the drive
+  the way it formatted it: FAT16, 256 MB.)
 
 ## Updating
 
@@ -247,7 +267,7 @@ saving the stock driver's settings, it loads `g_mass_storage` again, backed by t
 can't mistake it for the Kindle's storage. When the computer ejects it, the kernel closes the
 image and empties the LUN's `file` attribute, which is what the plugin watches for. Stop unloads
 it and restores the stock driver as usual. The plugin formats and reads the FAT image itself
-(`usbmtp_fat.lua`: FAT12/16/32, long names, MBR or no partition table), so nothing beyond the
+(`usbmtp_fat.lua`: just the FAT16 layout it creates, with long names), so nothing beyond the
 stock kernel modules is needed on the Kindle.
 
 **`mtp-watch.sh`** is started by the plugin's start call. If KOReader dies without stopping
@@ -410,11 +430,11 @@ If BusyBox is installed, the scripts run under BusyBox ash, as on the device. Th
 - the three plug-in modes, including migrating the old setting;
 - USB drive mode, end to end: creating the image, sharing it under its own USB identity,
   noticing the eject, importing (folders, Mac junk skipped, already-there files, a newer copy of
-  the open book, a file that can't be copied), leftovers after an exit, sleep, a drive the
-  computer reformatted, resizing, and the plug-in prompt's "other mode" button;
-- the FAT code against real tools: our images pass `fsck.fat` and take files from mtools, and
-  drives formatted by `mkfs.fat` (FAT12/16/32, no partition table) read back byte for byte,
-  including long Unicode names, fragmented files, and refusing a file cut short;
+  the open book, a file that can't be copied), a drive that wasn't ejected, leftovers after an
+  exit, sleep, a drive the computer reformatted, and erasing;
+- the FAT code against real tools: our images pass `fsck.fat` and take files from mtools, which
+  read back byte for byte (long Unicode names, fragmented files); a file cut short is refused,
+  and a drive reformatted by `mkfs.fat` or deliberately malformed is reported, never misread;
 - the status-bar marker coming and going with the session;
 - a luacheck pass, which catches e.g. a function used before it's defined;
 - the updater itself, using KOReader's real unzip and checksum code against fake GitHub
@@ -461,10 +481,11 @@ on my own Kindle. I'm sceptical of AI-made software, so here's what that means i
     resumes with the cable still in.
   - **Fourth review (v0.8, USB drive mode):** a drive the computer hadn't ejected would have been
     imported anyway, so a half-written copy could replace a good book before the drive was
-    wiped; now such a drive isn't imported without asking, and never over existing books. It
+    wiped; now such a drive isn't imported until it's been ejected properly. It
     also found that a deliberately malformed drive could make the FAT reader run out of memory
-    (its counts are now clamped to the image's real size), that small FAT32 drives were misread
-    as empty, and several smaller import edge cases.
+    (its counts are now clamped to the image's real size), and several smaller import edge
+    cases. After it, drive mode was cut back to essentials (one fixed size, FAT16 only, no
+    "add anyway"), about a fifth less code.
 - The [test suite](#tests) runs the real scripts and plugin code against a simulated Kindle, and
   runs on GitHub for every change. It includes tests that were checked to fail on each of those
   bugs.

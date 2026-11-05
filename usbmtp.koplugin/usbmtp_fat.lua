@@ -1,5 +1,5 @@
 --[[
-usbmtp_fat: just enough FAT for the "USB drive" mode.
+usbmtp_fat: just enough FAT16 for the "USB drive" mode.
 
 The computer gets a disk image (not the Kindle's own storage, which stays mounted
 here), writes books into it, and ejects it; then this module reads the image to
@@ -7,20 +7,16 @@ copy them into documents/, and wipes it for next time. No loop devices or extra
 binaries needed on the Kindle.
 
   Fat.format(path [, label])     -> true | nil, err   (MBR + one FAT16 partition, size = file size)
-  local vol = Fat.open(path)     -> vol | nil, err    (FAT12/16/32; MBR or no partition table)
+  local vol = Fat.open(path)     -> vol | nil, err    (only that layout)
   vol:list()                     -> { {path=, size=, cluster=}, ... }, skipped | nil, err
   vol:dirty()                    -> true if the computer still had it mounted (not ejected)
   vol:extract(file, dest)        -> true | nil, err
   vol:close()
 
-Read side is deliberately tolerant of how the computer left the filesystem
-(long names, subfolders, a reformat as FAT32), and strict about anything that
-could be a half-written file: a cluster chain shorter than the file size, or
-running off the volume, is an error rather than a truncated book. A volume
-the computer never unmounted (dirty) can hold files whose size is right but
-whose data never arrived; nothing on the read side can tell, so callers check
-dirty() first. The image is untrusted input: every count from the boot sector
-is clamped to what the image file can actually hold.
+The reader is strict: a cluster chain shorter than the file size, or running off
+the volume, is an error rather than a truncated book. A dirty volume can hold
+files whose size is right but whose data never arrived, which nothing here can
+detect, so callers check dirty() first. The image is untrusted input.
 ]]
 
 local bit = require("bit")
@@ -136,80 +132,47 @@ end
 local Vol = {}
 Vol.__index = Vol
 
-local function isBootSector(s)
-    if not s or #s < 512 or u16(s, 510) ~= 0xAA55 then return false end
-    local jmp = u8(s, 0)
-    if jmp ~= 0xEB and jmp ~= 0xE9 then return false end
-    local bps, spc = u16(s, 11), u8(s, 13)
-    if bps ~= 512 and bps ~= 1024 and bps ~= 2048 and bps ~= 4096 then return false end
-    if spc == 0 or bit.band(spc, spc - 1) ~= 0 then return false end
-    if u16(s, 14) == 0 or u8(s, 16) == 0 or u8(s, 16) > 2 then return false end
-    if u16(s, 22) == 0 and u32(s, 36) == 0 then return false end -- (exFAT has all of these zero)
-    return true
-end
-
+-- Only what Fat.format makes is read: an MBR with a FAT16 partition. A drive the
+-- computer reformatted (FAT32, exFAT, ...) is reported, and erasing it fixes it.
+-- Every count from the image is untrusted and clamped to what the file holds.
 function Fat.open(path)
     local f, err = io.open(path, "rb")
     if not f then return nil, err end
-    local s0 = readAt(f, 0, 512)
-    local base = 0
-    local boot = s0
-    if not isBootSector(s0) then
-        if not s0 or u16(s0, 510) ~= 0xAA55 then f:close(); return nil, "no filesystem found" end
-        base = nil
-        for i = 0, 3 do
-            local e = 446 + 16 * i
-            local ptype, lba = u8(s0, e + 4), u32(s0, e + 8)
-            if ptype ~= 0 and lba > 0 then base = lba * SECTOR; break end
-        end
-        boot = base and readAt(f, base, 512)
-        if not isBootSector(boot) then
-            f:close()
-            return nil, "the drive isn't FAT any more (was it reformatted on the computer?)"
-        end
+    local function bad(msg) f:close(); return nil, msg end
+    local mbr = readAt(f, 0, 512)
+    if not mbr or u16(mbr, 510) ~= 0xAA55 then return bad("no filesystem found") end
+    local base = u32(mbr, 446 + 8) * SECTOR
+    local boot = base > 0 and readAt(f, base, 512)
+    local reformatted = "the drive isn't the way the Kindle formatted it (was it reformatted on the computer?)"
+    if not boot or u16(boot, 510) ~= 0xAA55 or u16(boot, 11) ~= SECTOR or u8(boot, 16) ~= 2
+            or u16(boot, 22) == 0 or u16(boot, 14) == 0 then
+        return bad(reformatted)
     end
-    local image_size = f:seek("end") or 0
     local v = setmetatable({ f = f, base = base, boot = boot }, Vol)
-    v.bps = u16(boot, 11)
     v.spc = u8(boot, 13)
-    v.csize = v.bps * v.spc
-    local reserved, nfats, rootents = u16(boot, 14), u8(boot, 16), u16(boot, 17)
+    if v.spc == 0 or bit.band(v.spc, v.spc - 1) ~= 0 then return bad(reformatted) end
+    v.csize = SECTOR * v.spc
+    local reserved, fatsz = u16(boot, 14), u16(boot, 22)
+    local rootsec = math.ceil(u16(boot, 17) * 32 / SECTOR)
     local totsec = u16(boot, 19) ~= 0 and u16(boot, 19) or u32(boot, 32)
-    local fatsz = u16(boot, 22) ~= 0 and u16(boot, 22) or u32(boot, 36)
-    local rootsec = math.ceil(rootents * 32 / v.bps)
-    v.root_off = base + (reserved + nfats * fatsz) * v.bps
-    v.root_len = rootsec * v.bps
+    v.root_off = base + (reserved + 2 * fatsz) * SECTOR
+    v.root_len = rootsec * SECTOR
     v.data_off = v.root_off + v.root_len
-    v.clusters = math.floor((totsec - reserved - nfats * fatsz - rootsec) / v.spc)
-    -- FAT32 is told apart by its 16-bit FAT size being 0, as Linux does (a small
-    -- FAT32 volume can have a FAT16-sized cluster count).
-    if u16(boot, 22) == 0 then v.kind = 32
-    else v.kind = v.clusters < 4085 and 12 or (v.clusters < 65525 and 16 or 32) end
-    if v.kind == 32 then v.root_cluster = u32(boot, 44) end
-    local fat_len = fatsz * v.bps
-    if fat_len > 32 * 1024 * 1024 then f:close(); return nil, "filesystem too large" end
-    -- Never trust the boot sector's counts beyond what the FAT and the file can hold.
-    local per_entry = v.kind == 12 and 1.5 or (v.kind == 16 and 2 or 4)
-    v.clusters = math.min(v.clusters, math.floor(fat_len / per_entry) - 2,
-                          math.floor((image_size - v.data_off) / v.csize))
-    if v.clusters < 1 then f:close(); return nil, "bad filesystem geometry" end
-    v.fat = readAt(f, base + reserved * v.bps, fat_len)
-    if not v.fat then f:close(); return nil, "can't read the file allocation table" end
+    v.clusters = math.floor((totsec - reserved - 2 * fatsz - rootsec) / v.spc)
+    if v.clusters < 4085 or v.clusters > 65524 then return bad(reformatted) end -- not FAT16
+    v.clusters = math.min(v.clusters, fatsz * SECTOR / 2 - 2,
+                          math.floor(((f:seek("end") or 0) - v.data_off) / v.csize))
+    if v.clusters < 1 then return bad("the drive is damaged") end
+    v.fat = readAt(f, base + reserved * SECTOR, fatsz * SECTOR)
+    if not v.fat then return bad("the drive is damaged") end
     return v
 end
 
--- Still marked in use by the computer that had it: Windows and macOS clear the
--- "clean" bit in FAT entry 1 while mounted, Linux sets bit 0 of the boot
--- sector's state byte. (FAT12 has neither.)
+-- Still marked in use by the computer that had it (not ejected): Windows and
+-- macOS clear the "clean" bit in FAT entry 1 while it's mounted, Linux sets bit 0
+-- of the boot sector's state byte.
 function Vol:dirty()
-    if self.kind == 16 then
-        if bit.band(u16(self.fat, 2), 0x8000) == 0 then return true end
-        return bit.band(u8(self.boot, 37), 1) ~= 0
-    elseif self.kind == 32 then
-        if bit.band(u32(self.fat, 4), 0x08000000) == 0 then return true end
-        return bit.band(u8(self.boot, 65), 1) ~= 0
-    end
-    return false
+    return bit.band(u16(self.fat, 2), 0x8000) == 0 or bit.band(u8(self.boot, 37), 1) ~= 0
 end
 
 function Vol:close()
@@ -217,42 +180,16 @@ function Vol:close()
     self.f = nil
 end
 
--- Next cluster, or nil at the end of the chain; false if the chain is broken.
-function Vol:nextCluster(c)
-    local v
-    if self.kind == 12 then
-        local off = c + math.floor(c / 2)
-        if off + 2 > #self.fat then return false end
-        v = u16(self.fat, off)
-        v = (c % 2 == 1) and bit.rshift(v, 4) or bit.band(v, 0xFFF)
-        if v >= 0xFF8 then return nil end
-        if v == 0xFF7 then return false end
-    elseif self.kind == 16 then
-        if 2 * c + 2 > #self.fat then return false end
-        v = u16(self.fat, 2 * c)
-        if v >= 0xFFF8 then return nil end
-        if v == 0xFFF7 then return false end
-    else
-        if 4 * c + 4 > #self.fat then return false end
-        v = bit.band(u32(self.fat, 4 * c), 0x0FFFFFFF)
-        if v < 0 then v = v + 4294967296 end
-        if v >= 0x0FFFFFF8 then return nil end
-        if v == 0x0FFFFFF7 then return false end
-    end
-    if v < 2 or v >= self.clusters + 2 then return false end
-    return v
-end
-
 -- Up to `limit` clusters of the chain starting at `first` (nil if it's broken
 -- before that). The limit also bounds a chain that loops back on itself.
 function Vol:chain(first, limit)
     local out = {}
     local c = first
-    while c and #out < limit do
+    while #out < limit do
         if c < 2 or c >= self.clusters + 2 then return nil end
         out[#out + 1] = c
-        c = self:nextCluster(c)
-        if c == false then return nil end
+        c = u16(self.fat, 2 * c)
+        if c >= 0xFFF8 then break end -- end of chain
     end
     return out
 end
@@ -261,12 +198,9 @@ function Vol:clusterOffset(c)
     return self.data_off + (c - 2) * self.csize
 end
 
--- Raw bytes of a directory: the fixed FAT12/16 root, or a cluster chain.
+-- Raw bytes of a directory: the fixed root, or a cluster chain.
 function Vol:dirData(cluster)
-    if not cluster then
-        if self.kind == 32 then cluster = self.root_cluster
-        else return readAt(self.f, self.root_off, self.root_len) end
-    end
+    if not cluster then return readAt(self.f, self.root_off, self.root_len) end
     -- (More than 2 MiB of directory entries is not a real folder.)
     local ch = self:chain(cluster, math.max(1, math.floor(2 * 1024 * 1024 / self.csize)))
     if not ch then return nil end
@@ -368,10 +302,8 @@ function Vol:entries(cluster)
             name = name or shortName(e)
             lfn = nil
             if name ~= "." and name ~= ".." then
-                local cl = u16(e, 26)
-                if self.kind == 32 then cl = cl + u16(e, 20) * 65536 end
                 out[#out + 1] = { name = name, attr = attr, dir = bit.band(attr, 0x10) ~= 0,
-                                  cluster = cl, size = u32(e, 28) }
+                                  cluster = u16(e, 26), size = u32(e, 28) }
             end
         end
     end

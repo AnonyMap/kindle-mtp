@@ -8,18 +8,15 @@ Kindle's own storage stays mounted here the whole time, so KOReader keeps
 running. After the computer ejects it, import() copies what's on it into
 documents/ and wipe() empties it for next time.
 
-  Drive.creator(path, mb)   -> step function: each call writes a bit more;
-                               returns a fraction, true when done, or nil, err
+  Drive.create(path)        -> true | nil, err   (SIZE_MB, formatted; takes a while)
   Drive.pending(path)       -> number of files waiting on the drive (or nil, err)
-  Drive.import(path, opts)  -> result | nil, err
-        result = { added = {us paths}, same = n, empty = n, skipped = n,
-                   failed = { {name=, err=} }, forced = bool }
-        nil, err, Drive.DIRTY when the computer didn't eject it (opts.allow_dirty
-        imports anyway, but then never replaces a book already on the Kindle)
+  Drive.import(path, opts)  -> result | nil, err [, "dirty"]
+        result = { added = {us paths}, same = n, empty = n, skipped = n, failed = { {name=, err=} } }
+        "dirty": the computer didn't eject it, so nothing was touched; the books
+        wait on the drive until it's ejected properly
         opts.before_replace(us_path)  called before an existing file is overwritten
-        opts.progress(i, n, name)     before each file
         opts.free_space(dir)          bytes available (default: util.diskUsage)
-  Drive.wipe(path)          -> true | nil, err
+  Drive.wipe(path), Drive.erase(path)
 ]]
 
 local Fat = require("usbmtp_fat")
@@ -29,6 +26,7 @@ local Drive = {
     IMAGE = "/mnt/base-us/koreader/usbmtp-drive.img", -- base-us: the kernel must not go through Amazon's FUSE layer
     BOOKS = "/mnt/base-us/documents",
     MB = 1024 * 1024,
+    SIZE_MB = 256,
 }
 
 -- KOReader knows files by their /mnt/us path.
@@ -60,46 +58,31 @@ function Drive.size(path)
     return lfs.attributes(path, "size")
 end
 
--- Writing the image's zeros is the slow part (vfat on this kernel can't create a
--- large file any other way), so it's done a few MB per call.
-function Drive.creator(path, mb, free_space)
-    local total = mb * Drive.MB
-    local tmp = path .. ".part"
-    local f, written, zero
-    return function()
-        if not f then
-            local dir = path:match("^(.*)/[^/]+$")
-            local ok, err = mkdirs(dir)
-            if not ok then return nil, err end
-            local avail = (free_space or defaultFreeSpace)(dir)
-            if avail and avail < total + 32 * Drive.MB then
-                return nil, string.format("not enough space on the Kindle (%d MB needed, %d MB free)",
-                                          mb + 32, math.floor(avail / Drive.MB))
-            end
-            f, err = io.open(tmp, "wb")
-            if not f then return nil, err end
-            written, zero = 0, string.rep("\0", Drive.MB)
-        end
-        for _ = 1, 4 do
-            if written >= total then break end
-            if not f:write(zero) then
-                f:close(); os.remove(tmp)
-                return nil, "write failed (Kindle full?)"
-            end
-            written = written + Drive.MB
-        end
-        if written < total then return written / total end
-        local ok = f:close()
-        f = nil
-        local err
-        if ok then ok, err = Fat.format(tmp) end
-        if ok then ok, err = os.rename(tmp, path) end
-        if not ok then
-            os.remove(tmp)
-            return nil, err or "write failed (Kindle full?)"
-        end
-        return true
+-- Zeros first (vfat on this kernel can't make a large file any other way), then
+-- the filesystem; renamed into place only when complete.
+function Drive.create(path, free_space)
+    local mb = Drive.SIZE_MB
+    local dir = path:match("^(.*)/[^/]+$")
+    local ok, err = mkdirs(dir)
+    if not ok then return nil, err end
+    local avail = (free_space or defaultFreeSpace)(dir)
+    if avail and avail < (mb + 32) * Drive.MB then
+        return nil, string.format("not enough space on the Kindle (%d MB needed, %d MB free)",
+                                  mb + 32, math.floor(avail / Drive.MB))
     end
+    local tmp = path .. ".part"
+    local f
+    f, err = io.open(tmp, "wb")
+    if not f then return nil, err end
+    local zero = string.rep("\0", Drive.MB)
+    for _ = 1, mb do
+        if not f:write(zero) then f:close(); os.remove(tmp); return nil, "write failed (Kindle full?)" end
+    end
+    ok = f:close()
+    if ok then ok, err = Fat.format(tmp) end
+    if ok then ok, err = os.rename(tmp, path) end
+    if not ok then os.remove(tmp); return nil, err or "write failed (Kindle full?)" end
+    return true
 end
 
 function Drive.pending(path)
@@ -126,23 +109,15 @@ local function sameContent(a, b, size)
     return same
 end
 
--- Why an import didn't happen, for the caller to act on.
-Drive.DIRTY = "dirty"
-
 function Drive.import(path, opts)
     opts = opts or {}
     local vol, err = Fat.open(path)
     if not vol then return nil, err end
     -- Not ejected: the computer may not have written everything yet (a file can
-    -- have its final size and no data). Only on request, and then never over an
-    -- existing book.
-    local forced = false
+    -- have its final size and no data). Leave it all for a proper eject.
     if vol:dirty() then
-        if not opts.allow_dirty then
-            vol:close()
-            return nil, "the computer still had the drive open (it wasn't ejected)", Drive.DIRTY
-        end
-        forced = true
+        vol:close()
+        return nil, "the drive wasn't ejected on the computer", "dirty"
     end
     local list, skipped = vol:list()
     if not list then vol:close(); return nil, skipped end
@@ -189,19 +164,14 @@ function Drive.import(path, opts)
             os.remove(tmp) -- e.g. imported before, by a run that stopped part-way
             return "same"
         end
-        if existing and forced then
-            os.remove(tmp)
-            return nil, "not replacing the copy on the Kindle (the drive wasn't ejected)"
-        end
         if existing and opts.before_replace then opts.before_replace(Drive.usPath(p.dest)) end
         ok, e = os.rename(tmp, p.dest)
         if not ok then os.remove(tmp); return nil, e end
         return "added"
     end
 
-    local result = { added = {}, same = 0, empty = 0, skipped = skipped or 0, failed = {}, forced = forced }
-    for i, p in ipairs(plan) do
-        if opts.progress then opts.progress(i, #plan, p.file.path) end
+    local result = { added = {}, same = 0, empty = 0, skipped = skipped or 0, failed = {} }
+    for _, p in ipairs(plan) do
         local status, e = importOne(p)
         if status == "added" then
             result.added[#result.added + 1] = Drive.usPath(p.dest)

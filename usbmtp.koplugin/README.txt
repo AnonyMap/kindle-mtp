@@ -13,6 +13,15 @@ Confirmed: FW 5.16.8 with Bazzite Linux (KDE), file manager and Calibre.
 Nothing is permanent: if anything gets stuck, rebooting the Kindle restores
 stock USB.
 
+ON A MAC (nothing to install on the Mac)
+  1. Tools > USB file transfer > Connection > USB drive  (once)
+  2. Plug into the Mac, tap Start USB file transfer.
+  3. A drive called TO KINDLE appears in Finder. Drag books onto it.
+  4. Eject TO KINDLE in Finder. The Kindle adds the books.
+  Always eject before unplugging, or the books wait on the drive until
+  you start again and eject. To see or delete books already on the
+  Kindle, use the OpenMTP app with Connection > MTP instead.
+
 WRITTEN BY AI: this plugin was developed with an AI model (Anthropic's
 Claude). Its author directed and tested it but didn't write the code. It
 has been tested on one Kindle. It runs as root and swaps USB kernel modules
@@ -51,8 +60,7 @@ START IT (any of these)
     with the cable still in (full battery topping up, or just after Stop).
   - Gesture: Settings > Taps and gestures > Gesture manager > pick a
     gesture > General > "Toggle USB file transfer".
-  Connection (same menu): MTP, or USB drive (see below). The plug-in
-  prompt also offers the other one, for that time only.
+  Connection (same menu): MTP, or USB drive (see below).
 
 WHILE SHARING
   A dialog shows the status with two buttons:
@@ -77,16 +85,15 @@ USB DRIVE (Mac, Windows, any computer, no app)
   3. Eject it on the computer.
   4. The Kindle copies them into documents/, empties the drive, and
      offers to open them.
-  The drive is a file, koreader/usbmtp-drive.img (256 MB by default;
-  Connection > USB drive size), so the Kindle's own storage is never
-  shared: the computer can only add books, not see or delete them.
+  The drive is a 256 MB file, koreader/usbmtp-drive.img, so the Kindle's
+  own storage is never shared: the computer can only add books, not see
+  or delete them.
   First start creates it (takes a while). It keeps using that space;
   Connection > Erase the USB drive frees it.
   Anything that can't be copied stays on the drive and is listed.
   Eject before unplugging or tapping Stop: if the computer still has the
-  drive open, nothing is added (the last book may be incomplete); you get
-  Start again (to eject it properly) or Add anyway (never replaces a book
-  already on the Kindle).
+  drive open, nothing is added (the last book may be incomplete). The
+  books stay on the drive: tap Start again, then eject it.
   Calibre: use "Connect to folder" on the TO KINDLE drive (or use MTP).
 
 CALIBRE
