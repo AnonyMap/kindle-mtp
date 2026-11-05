@@ -414,7 +414,9 @@ print("== Z. USB drive mode (Mac/Windows, no app)")
 local Drive = require("usbmtp_drive")
 local IMG = Drive.IMAGE
 local DOCS = "/mnt/base-us/documents"
-local function sh0(cmd) return os.execute("export MTOOLS_SKIP_CHECK=1 LANG=C.UTF-8; " .. cmd .. " >/dev/null 2>&1") == 0 end
+-- os.execute: 0 in Lua 5.1 mode, true/"exit"/0 in a LuaJIT built with 5.2 compat
+local function ran(a, _, c) if type(a) == "number" then return a == 0 end; return a == true and (c == nil or c == 0) end
+local function sh0(cmd) return ran(os.execute("export MTOOLS_SKIP_CHECK=1 LANG=C.UTF-8; " .. cmd .. " >/dev/null 2>&1")) end
 local function writef(p, c) local f = assert(io.open(p, "wb")); f:write(c); f:close() end
 local function readf(p) local f = io.open(p, "rb"); if not f then return nil end; local c = f:read("*a"); f:close(); return c end
 local function onDrive(name, content) -- the computer copies a file onto the drive
@@ -584,5 +586,19 @@ top().other_buttons[1][1].callback(); UIManager:close(top()); runTasks()
 check(CtlM.active and CtlM.mode == "mtp", "MTP this time")
 check(settings.usbmtp_mode == "drive", "without changing the setting")
 CtlM:stop(); settings.usbmtp_on_plug = nil; settings.usbmtp_mode = nil
+
+print("== os.execute results in both Lua modes (KOReader: 5.1 numbers; some LuaJIT builds: 5.2 triples)")
+do
+  local real = os.execute
+  local cases = { { { 0 }, true }, { { 256 }, false }, { { true, "exit", 0 }, true }, { { nil, "exit", 1 }, false },
+                  { { nil, "signal", 9 }, false } }
+  local all = true
+  for _, c in ipairs(cases) do
+    os.execute = function() return unpack(c[1]) end
+    if CtlM:runScript("mtp-status.sh") ~= c[2] then all = false end
+  end
+  os.execute = real
+  check(all, "script success/failure read correctly either way")
+end
 
 print(string.format("\n%d passed, %d failed", pass, fail))

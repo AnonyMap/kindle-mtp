@@ -167,12 +167,19 @@ local Ctl = {
     import_pending = false, -- drive mode: stopped while asleep, import on wake
 }
 
+-- os.execute's result: a number in KOReader's LuaJIT (Lua 5.1), but true/nil,
+-- "exit", code in a LuaJIT built with Lua 5.2 compatibility.
+local function succeeded(a, _, code)
+    if type(a) == "number" then return a == 0 end
+    return a == true and (code == nil or code == 0)
+end
+
 function Ctl:runScript(script, env)
     local cmd = string.format("%ssh '%s/%s' >/dev/null 2>&1", env or "", self.mtp_dir, script)
     logger.info("usbmtp: running", cmd)
-    local rc = os.execute(cmd)
-    logger.info("usbmtp:", script, "returned", rc)
-    return rc == 0
+    local a, b, c = os.execute(cmd)
+    logger.info("usbmtp:", script, "returned", a, b, c)
+    return succeeded(a, b, c)
 end
 
 -- What the most recent script run said: its first "ERROR: ..." line (the cause),
