@@ -4,7 +4,7 @@
 set -eu
 KOREADER_BASE_COMMIT="a5ad8957c002cc05f8e7b0af644a45ca990629d7"
 sudo apt-get update -qq
-sudo apt-get install -y -qq busybox luajit lua-dkjson lua-filesystem libarchive13t64 zip shellcheck lua-check >/dev/null
+sudo apt-get install -y -qq busybox luajit lua-dkjson lua-filesystem libarchive13t64 zip shellcheck lua-check mtools dosfstools >/dev/null
 dir="${RUNNER_TEMP:-/tmp}/koreader-base"
 rm -rf "$dir"
 git init -q "$dir"

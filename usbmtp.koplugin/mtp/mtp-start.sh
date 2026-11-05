@@ -6,6 +6,8 @@
 #   sh /mnt/us/koreader/plugins/usbmtp.koplugin/mtp/mtp-stop.sh
 #
 # Env overrides:  KMTP_MODE=gffs  (skip configfs, use the legacy g_ffs gadget)
+#                 KMTP_DRIVE=<image>  (instead of MTP, share that disk image as a
+#                                      plain USB drive; see usbmtp_fat.lua)
 #                 FORCE=1         (skip the kernel-version check)
 #                 KMTP_WATCH_PID=<pid>  (stop automatically if that process dies;
 #                                        the KOReader plugin passes its own pid)
@@ -25,8 +27,18 @@ if [ "$(uname -r)" != "${EXPECTED_KERNEL}" ] && [ "${FORCE:-0}" != "1" ]; then
 fi
 
 [ -d "/sys/class/udc/${UDC_NAME}" ] || die "USB controller ${UDC_NAME} not found"
-[ -f "${KMTP_SRC}/bin/umtprd" ] || die "missing ${KMTP_SRC}/bin/umtprd"
-[ -f "${MODDIR}/function/usb_f_fs.ko" ] || die "missing usb_f_fs.ko"
+DRIVE="${KMTP_DRIVE:-}"
+if [ -z "${DRIVE}" ]; then
+    [ -f "${KMTP_SRC}/bin/umtprd" ] || die "missing ${KMTP_SRC}/bin/umtprd"
+    [ -f "${MODDIR}/function/usb_f_fs.ko" ] || die "missing usb_f_fs.ko"
+else
+    case "${DRIVE}" in
+        /mnt/base-us/*) ;;
+        *) die "the drive image must be under /mnt/base-us (not the /mnt/us FUSE view): ${DRIVE}" ;;
+    esac
+    [ -f "${DRIVE}" ] || die "missing drive image ${DRIVE}"
+    [ -f "${MODDIR}/legacy/g_mass_storage.ko" ] || die "missing g_mass_storage.ko"
+fi
 
 if [ -f "${KMTP_STATE}" ] || daemon_pid >/dev/null; then
     die "MTP already active. Run mtp-stop.sh first."
@@ -46,23 +58,35 @@ if gms_exporting; then
     die "the stock USB drive mode is exporting storage right now. Eject on the computer and unplug first."
 fi
 
-# ---------- stage binaries on tmpfs ----------
-mkdir -p "${KMTP_RUN}" || die "cannot create ${KMTP_RUN}"
-: >"${KMTP_DLOG}"
-cp -f "${KMTP_SRC}/bin/umtprd" "${KMTP_RUN}/umtprd" || die "cannot copy umtprd"
-cp -f "${KMTP_SRC}/conf/umtprd.conf" "${KMTP_RUN}/umtprd.conf" || die "cannot copy config"
-
 # Report the Kindle's own serial (as the stock USB mode does), so Calibre and other
 # hosts can tell devices apart and remember per-device settings.
 SERIAL="$(tr -dc 'A-Za-z0-9' </proc/usid 2>/dev/null | cut -c1-16)"
 [ -n "${SERIAL}" ] || SERIAL="KMTP0001"
-VERSION="$(cat "${KMTP_SRC}/VERSION" 2>/dev/null)"
-sed -e "s/^serial .*/serial \"${SERIAL}\"/" \
-    -e "s/^firmware_version .*/firmware_version \"usbmtp ${VERSION:-unknown}\"/" \
-    "${KMTP_RUN}/umtprd.conf" >"${KMTP_RUN}/umtprd.conf.tmp" &&
-    mv -f "${KMTP_RUN}/umtprd.conf.tmp" "${KMTP_RUN}/umtprd.conf" || die "cannot write config"
-chmod 755 "${KMTP_RUN}/umtprd"
+
+# ---------- stage binaries on tmpfs ----------
+mkdir -p "${KMTP_RUN}" || die "cannot create ${KMTP_RUN}"
+rm -f "${KMTP_RECEIVED}"
+if [ -z "${DRIVE}" ]; then
+    : >"${KMTP_DLOG}"
+    cp -f "${KMTP_SRC}/bin/umtprd" "${KMTP_RUN}/umtprd" || die "cannot copy umtprd"
+    cp -f "${KMTP_SRC}/conf/umtprd.conf" "${KMTP_RUN}/umtprd.conf" || die "cannot copy config"
+    VERSION="$(cat "${KMTP_SRC}/VERSION" 2>/dev/null)"
+    sed -e "s/^serial .*/serial \"${SERIAL}\"/" \
+        -e "s/^firmware_version .*/firmware_version \"usbmtp ${VERSION:-unknown}\"/" \
+        "${KMTP_RUN}/umtprd.conf" >"${KMTP_RUN}/umtprd.conf.tmp" &&
+        mv -f "${KMTP_RUN}/umtprd.conf.tmp" "${KMTP_RUN}/umtprd.conf" || die "cannot write config"
+    chmod 755 "${KMTP_RUN}/umtprd"
+fi
 state_set STARTED "$(date +%s)"
+
+# Crash safety: if the caller (KOReader) dies without stopping us, stop ourselves.
+start_watcher() {
+    if [ -n "${KMTP_WATCH_PID:-}" ]; then
+        sh "${KMTP_SRC}/mtp-watch.sh" "${KMTP_WATCH_PID}" >/dev/null 2>&1 </dev/null &
+        echo $! >"${KMTP_WATCHER_PIDFILE}"
+        log "watching process ${KMTP_WATCH_PID}"
+    fi
+}
 
 # From here on, any failure must roll back.
 fail() {
@@ -86,6 +110,35 @@ if mod_loaded g_mass_storage; then
     rmmod g_mass_storage || fail "could not unload g_mass_storage (in use?)"
 else
     state_set GMS_WAS_LOADED no
+fi
+
+# ---------- or: share a disk image as a plain USB drive ----------
+# The stock driver again, but backed by the image (a separate filesystem the
+# Kindle doesn't have mounted) and under its own USB identity, so the computer
+# doesn't take it for the Kindle's own storage. removable=1: ejecting it on the
+# computer closes the image, which is how the plugin knows the books are in.
+if [ -n "${DRIVE}" ]; then
+    state_set MODE drive
+    state_set DRIVE "${DRIVE}"
+    log "sharing ${DRIVE} as a USB drive"
+    insmod "${MODDIR}/legacy/g_mass_storage.ko" file="${DRIVE}" removable=1 ro=0 stall=0 luns=1 \
+        idVendor=0x1d6b idProduct=0x0104 iManufacturer=KOReader 'iProduct="Kindle drive"' \
+        iSerialNumber="${SERIAL}" || fail "could not load the USB drive driver"
+    state_set DRIVE_LOADED yes
+    LUN=""
+    for _f in /sys/class/udc/${UDC_NAME}/device/gadget/lun*/file; do
+        [ "$(cat "${_f}" 2>/dev/null)" = "${DRIVE}" ] && { LUN="${_f}"; break; }
+    done
+    if [ -z "${LUN}" ]; then
+        for _f in $(find /sys/devices -path '*/gadget/lun*/file' 2>/dev/null); do
+            [ "$(cat "${_f}" 2>/dev/null)" = "${DRIVE}" ] && { LUN="${_f}"; break; }
+        done
+    fi
+    [ -n "${LUN}" ] || fail "the USB drive driver didn't take the image"
+    state_set DRIVE_LUN "${LUN}"
+    start_watcher
+    log "USB drive is ON (USB: $(udc_state))"
+    exit 0
 fi
 
 # ---------- build the MTP gadget ----------
@@ -180,12 +233,7 @@ fi
 usleep 500000 2>/dev/null || sleep 1
 daemon_pid >/dev/null || fail "umtprd died after binding"
 
-# Crash safety: if the caller (KOReader) dies without stopping us, stop ourselves.
-if [ -n "${KMTP_WATCH_PID:-}" ]; then
-    sh "${KMTP_SRC}/mtp-watch.sh" "${KMTP_WATCH_PID}" >/dev/null 2>&1 </dev/null &
-    echo $! >"${KMTP_WATCHER_PIDFILE}"
-    log "watching process ${KMTP_WATCH_PID}"
-fi
+start_watcher
 
 log "MTP is ON (mode: ${MODE}, USB: $(udc_state))"
 log "Plug in the cable if it isn't already. Keep the Kindle awake while copying."

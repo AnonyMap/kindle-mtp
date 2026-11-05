@@ -1,9 +1,11 @@
-USB file transfer (MTP) for KOReader on Kindle
-==============================================
+USB file transfer for KOReader on Kindle
+=======================================
 Lets your computer copy books over USB while KOReader stays open, from the
 file browser (any view, including mosaic/bookshelf) or inside a book.
+Two ways: MTP (Linux, Windows), or a plain USB drive any computer can use
+with no extra app (a Mac included).
 
-Version:  Tools > USB file transfer (MTP) > About, or the file mtp/VERSION
+Version:  Tools > USB file transfer > About, or the file mtp/VERSION
 Project:  https://github.com/AnonyMap/usbmtp
 Built for: Kindle 10th gen (2019), firmware 5.16.x, kernel 4.1.15-lab126.
 Confirmed: FW 5.16.8 with Bazzite Linux (KDE), file manager and Calibre.
@@ -30,10 +32,10 @@ INSTALL
      Kindle, replacing any older copy. (From GitHub's "Download ZIP", copy
      the usbmtp.koplugin folder from inside usbmtp-main.)
   3. Eject, unplug, start KOReader from KUAL.
-  4. Check: Tools > USB file transfer (MTP) > About shows the new version.
+  4. Check: Tools > USB file transfer > About shows the new version.
 
 UPDATING (v0.5 and later)
-  Tools > USB file transfer (MTP) > Check for updates (needs Wi-Fi).
+  Tools > USB file transfer > Check for updates (needs Wi-Fi).
   It shows the release notes and asks first. It only checks when you tap it.
   It refuses a download that fails its checksum, is incomplete, contains
   anything outside this plugin's folder, or has broken code, and it keeps
@@ -42,13 +44,15 @@ UPDATING (v0.5 and later)
   previous version is kept as usbmtp.koplugin.old until the new one loads.
 
 START IT (any of these)
-  - Menu: Tools (wrench) > USB file transfer (MTP) > Start USB file transfer
+  - Menu: Tools (wrench) > USB file transfer > Start USB file transfer
   - Plug in: in that menu, set "When plugged into a computer" to "ask
     first" or "start automatically" (default: do nothing). Works on any
     screen. Wall chargers are ignored, and so is charging that resumes
     with the cable still in (full battery topping up, or just after Stop).
   - Gesture: Settings > Taps and gestures > Gesture manager > pick a
-    gesture > General > "Toggle USB file transfer (MTP)".
+    gesture > General > "Toggle USB file transfer".
+  Connection (same menu): MTP, or USB drive (see below). The plug-in
+  prompt also offers the other one, for that time only.
 
 WHILE SHARING
   A dialog shows the status with two buttons:
@@ -60,9 +64,27 @@ WHILE SHARING
   After Stop, each book that arrived gets an Open button (first five).
   If the Kindle sleeps during a transfer, sharing stops; if the cable is
   still in when it wakes, you're offered Start again.
+  With MTP:
   Linux: "Kindle (MTP)" appears in Dolphin's / GNOME Files' sidebar.
-  Mac: use OpenMTP; quit Photos and Image Capture first.
+  Mac: macOS has no MTP support; use the USB drive connection, or the
+       OpenMTP app (quit Photos and Image Capture first).
   Windows: should appear in Explorer (untested).
+
+USB DRIVE (Mac, Windows, any computer, no app)
+  Set Connection > USB drive, then start as usual.
+  1. A drive called TO KINDLE appears on the computer (empty).
+  2. Copy books onto it. Folders are kept.
+  3. Eject it on the computer.
+  4. The Kindle copies them into documents/, empties the drive, and
+     offers to open them.
+  The drive is a file, koreader/usbmtp-drive.img (256 MB by default;
+  Connection > USB drive size), so the Kindle's own storage is never
+  shared: the computer can only add books, not see or delete them.
+  First start creates it (takes a while). It keeps using that space;
+  Connection > Erase the USB drive frees it.
+  Anything that can't be copied stays on the drive and is listed. Eject
+  before unplugging or tapping Stop, or the last book may be cut short.
+  Calibre: use "Connect to folder" on the TO KINDLE drive (or use MTP).
 
 CALIBRE
   Calibre sees it as an MTP device and sends EPUBs to "documents".
@@ -92,7 +114,7 @@ SAFETY RAILS (automatic)
   Don't edit the "koreader" folder from the computer while sharing.
 
 IF IT DOESN'T WORK
-  - Menu > USB file transfer (MTP) > Status / diagnostics (state, the end
+  - Menu > USB file transfer > Status / diagnostics (state, the end
     of both logs, and what arrived last time)
   - Logs, in koreader/plugins/usbmtp.koplugin/mtp/ (read them after exiting
     KOReader): mtp.log and umtprd-last.log

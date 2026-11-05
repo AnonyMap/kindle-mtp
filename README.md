@@ -1,15 +1,16 @@
 # usbmtp
 
 A [KOReader](https://github.com/koreader/koreader) plugin that lets a computer copy books to a
-jailbroken Kindle over USB **while KOReader keeps running**, using MTP. That includes from inside
-a book.
+jailbroken Kindle over USB **while KOReader keeps running**, using MTP, or as a plain USB drive
+that any computer can use with no extra app (a Mac included). That includes from inside a book.
 
 Normally KOReader on Kindle has no USB file transfer. Its launcher pauses Amazon's `volumd`
 daemon for as long as KOReader runs, because stock USB mass storage would unmount the partition
 KOReader itself lives on (`/mnt/us`). MTP avoids that: files are copied through the mounted
-filesystem, so nothing gets unmounted.
+filesystem, so nothing gets unmounted. The USB drive mode avoids it differently: the computer
+gets a separate disk image, never the storage the Kindle has mounted.
 
-> **Status: v0.7, early but working.** Confirmed on a Kindle 10th gen (FW 5.16.8) with Bazzite
+> **Status: v0.8, early but working.** Confirmed on a Kindle 10th gen (FW 5.16.8) with Bazzite
 > Linux (KDE): copying books from the file manager, and sending books from Calibre (Flatpak
 > 9.17). Everything else is covered by the simulated-Kindle test suite (see [Tests](#tests)) but
 > not yet confirmed on hardware; see [Not yet tested on hardware](#not-yet-tested-on-hardware).
@@ -62,17 +63,21 @@ storage is switched off, and usbmtp exists to fill that gap.
      `usbmtp.koplugin` folder from **inside** it, not the outer folder. KOReader only loads
      folders whose names end in `.koplugin`, so it ignores `usbmtp-main/`.
 3. Eject, unplug, and start KOReader **from KUAL**. The plugin needs KOReader's normal launcher.
-4. Check the version: Tools → **USB file transfer (MTP)** → **About (vX.Y)**.
+4. Check the version: Tools → **USB file transfer** → **About (vX.Y)** (called *USB file transfer (MTP)* before v0.8).
 
 ## Use
 
-- **Menu:** Tools (wrench) → **USB file transfer (MTP)** → **Start USB file transfer**
+- **Menu:** Tools (wrench) → **USB file transfer** → **Start USB file transfer**
 - **On plug-in:** set *When plugged into a computer* to **ask first** or **start automatically**
   (default: do nothing). Works on any screen. Wall chargers are ignored: only a computer that
   actually connects counts. So is charging resuming with the cable still in (when a full
   battery tops up, or right after you tap Stop): only a cable that was actually unplugged and
   plugged back in counts as a new plug-in.
-- **Gesture:** Gesture manager → *General* → **Toggle USB file transfer (MTP)**
+- **Gesture:** Gesture manager → *General* → **Toggle USB file transfer**
+
+**Connection** in the same menu picks how the computer sees the Kindle: **MTP** (default) or
+**USB drive** (see [below](#usb-drive-mode-mac-windows-no-app)). The plug-in prompt also offers
+the other one for that time only.
 
 While sharing, a dialog offers **Stop** or **Hide** (keep reading). With Hide, a small **ᴍᴛᴘ**
 appears in the reader's status bar while sharing is on; you can turn it off in the menu. Sharing
@@ -87,18 +92,53 @@ KOReader's own `.sdr` metadata is left out.
 If the Kindle goes to sleep during a transfer, sharing stops. When it wakes with the cable still
 in, the message offers **Start again**.
 
-On the computer:
+On the computer, with MTP:
 - **Linux:** shows up as "Kindle (MTP)" in Dolphin / GNOME Files.
-- **macOS:** use [OpenMTP](https://openmtp.ganeshrvel.com/). Quit Photos and Image Capture first.
+- **macOS:** macOS has no MTP support of its own. Use the **USB drive** connection instead, or an
+  MTP app such as [OpenMTP](https://openmtp.ganeshrvel.com/) (quit Photos and Image Capture
+  first: macOS's camera service grabs MTP devices).
 - **Windows:** should work in Explorer (untested).
 
 Don't edit the `koreader` folder from the computer while sharing.
+
+## USB drive mode (Mac, Windows, no app)
+
+Every computer can write to a USB stick without extra software, so this mode makes the Kindle
+look like one. Set **Connection → USB drive**, then start as usual:
+
+1. A drive called **TO KINDLE** appears on the computer. It starts empty.
+2. Copy books onto it (folders are kept; a `documents` folder dropped on it is merged).
+3. **Eject it** on the computer (Finder's eject button, *Safely Remove* on Windows).
+4. The Kindle notices, stops sharing, copies the books into `documents/`, empties the drive,
+   and offers to open them.
+
+What it is: a disk image, `koreader/usbmtp-drive.img` (256 MB by default; **Connection → USB
+drive size**), formatted FAT16. The Kindle's own storage stays mounted the whole time, so
+KOReader keeps running, and the computer can't see or delete the books already on the Kindle.
+It's one-way, for adding books. Use MTP to manage what's there.
+
+Details:
+- The first start creates the image, which takes a little while (writing 256 MB). It then stays,
+  using its full size on the Kindle; **Erase the USB drive** frees the space.
+- A file that's already on the Kindle with identical contents is skipped. A newer copy of the
+  book you have open closes it first.
+- If something can't be copied (no space, a folder with that name in the way, a file cut short
+  by unplugging without ejecting), it stays on the drive and the message says which and why.
+  The drive is only emptied when everything made it.
+- If KOReader exits before the drive is ejected, the books wait on it and are added after the
+  next session.
+- Unplugging or tapping **Stop** without ejecting also adds the books, but the computer may not
+  have finished writing the last one. Eject first.
+- Calibre doesn't recognise it as a Kindle. Use *Connect/share → Connect to folder* on the
+  TO KINDLE drive, or use MTP with Calibre.
+- If the computer offers to reformat the drive, don't. If it was reformatted anyway, the Kindle
+  says it can't read it; **Erase the USB drive** fixes that.
 
 ## Updating
 
 From v0.5 on, the plugin updates itself from this repo's
 [GitHub Releases](https://github.com/AnonyMap/usbmtp/releases) over Wi-Fi:
-**Tools → USB file transfer (MTP) → Check for updates**.
+**Tools → USB file transfer → Check for updates** (*USB file transfer (MTP)* before v0.8).
 
 - **When it runs:** only when you tap that menu entry, never automatically. It won't update
   while any transfer is running, including one started over SSH or left over from a crash.
@@ -197,6 +237,15 @@ On Linux 4.1, removing the function while FunctionFS is still mounted is a use-a
 `f_fs.c`. If anything can't be undone, the script reports it and keeps its saved state, so a
 retry can still restore stock USB.
 
+**USB drive mode** (`KMTP_DRIVE=<image> mtp-start.sh`) skips umtprd: after the same checks and
+saving the stock driver's settings, it loads `g_mass_storage` again, backed by the image
+(`removable=1`) and with its own USB identity (`1d6b:0104`, "Kindle drive"), so the computer
+can't mistake it for the Kindle's storage. When the computer ejects it, the kernel closes the
+image and empties the LUN's `file` attribute, which is what the plugin watches for. Stop unloads
+it and restores the stock driver as usual. The plugin formats and reads the FAT image itself
+(`usbmtp_fat.lua`: FAT12/16/32, long names, MBR or no partition table), so nothing beyond the
+stock kernel modules is needed on the Kindle.
+
 **`mtp-watch.sh`** is started by the plugin's start call. If KOReader dies without stopping
 MTP, it stops MTP within about a second.
 
@@ -221,7 +270,7 @@ sh /mnt/us/koreader/plugins/usbmtp.koplugin/mtp/mtp-stop.sh
 
 ## Troubleshooting
 
-- **Which version is on the Kindle?** Tools → USB file transfer (MTP) → **About (vX.Y)**, or the
+- **Which version is on the Kindle?** Tools → USB file transfer → **About (vX.Y)**, or the
   file `usbmtp.koplugin/mtp/VERSION`. If it isn't the version you expect, KOReader is still
   loading an old copy; see [Install](#install).
 - **Calibre doesn't see the Kindle**, but the file manager does: another program is holding the
@@ -229,7 +278,7 @@ sh /mnt/us/koreader/plugins/usbmtp.koplugin/mtp/mtp-stop.sh
 - **The computer doesn't see the Kindle at all:**
   - check that the plugin says "USB file transfer is on";
   - check that the cable carries data, not just power;
-  - on a Mac, use an MTP app (OpenMTP).
+  - on a Mac, use the **USB drive** connection, or an MTP app (OpenMTP).
 - **Kindle side:** run **Status / diagnostics** from the plugin menu. It shows:
   - the current state;
   - the end of both logs;
@@ -266,6 +315,9 @@ These pass in the simulated-Kindle suite but haven't been confirmed on a real de
 - Hide and keep reading during a transfer;
 - stock USB working normally after exiting KOReader;
 - **Check for updates** against the real GitHub (new in v0.5; tested against fake releases);
+- **USB drive mode** (new in v0.8) on any real computer: macOS and Windows mounting the image,
+  ejecting it being noticed (it relies on the computer sending the standard "eject" SCSI command,
+  which Finder and Windows' Safely Remove normally do), and the speed of creating the image;
 - Windows and macOS hosts.
 
 Reports are welcome.
@@ -278,6 +330,7 @@ Reports are welcome.
 | `usbmtp.koplugin/mtp/` | Start, stop, status and watcher scripts, umtprd and its config, version file |
 | `usbmtp.koplugin/mtp/umtprd-source/` | uMTP-Responder source, license (GPLv3) and our patch |
 | `usbmtp.koplugin/usbmtp_updater.lua` | The self-updater (GitHub Releases) |
+| `usbmtp.koplugin/usbmtp_drive.lua`, `usbmtp_fat.lua` | USB drive mode: the image, importing from it, and a small FAT formatter/reader |
 | `tools/make-release.sh` | Builds the release zip and `SHA256SUMS` into `dist/` |
 | `.github/workflows/release.yml` | Publishes a release when a `v*` tag is pushed |
 | `tools/build-umtprd.sh` | Reproducible rebuild of the umtprd binary |
@@ -351,6 +404,13 @@ If BusyBox is installed, the scripts run under BusyBox ash, as on the device. Th
 - charging events that aren't plug-ins (battery top-up, re-enumeration after Stop) being
   ignored;
 - the three plug-in modes, including migrating the old setting;
+- USB drive mode, end to end: creating the image, sharing it under its own USB identity,
+  noticing the eject, importing (folders, Mac junk skipped, already-there files, a newer copy of
+  the open book, a file that can't be copied), leftovers after an exit, sleep, a drive the
+  computer reformatted, resizing, and the plug-in prompt's "other mode" button;
+- the FAT code against real tools: our images pass `fsck.fat` and take files from mtools, and
+  drives formatted by `mkfs.fat` (FAT12/16/32, no partition table) read back byte for byte,
+  including long Unicode names, fragmented files, and refusing a file cut short;
 - the status-bar marker coming and going with the session;
 - a luacheck pass, which catches e.g. a function used before it's defined;
 - the updater itself, using KOReader's real unzip and checksum code against fake GitHub
@@ -366,7 +426,8 @@ If BusyBox is installed, the scripts run under BusyBox ash, as on the device. Th
 
 ```sh
 sudo sh tests/run.sh
-# include the updater tests (needs a koreader-base checkout, zip, lua-dkjson, lua-filesystem, libarchive13):
+# the FAT tests need mtools and dosfstools; the updater tests need a koreader-base checkout,
+# zip, lua-dkjson, lua-filesystem and libarchive13:
 sudo KOREADER_BASE=/path/to/koreader-base sh tests/run.sh
 # (.github/actions-test-deps.sh installs everything and fetches the pinned koreader-base ffi/)
 ```

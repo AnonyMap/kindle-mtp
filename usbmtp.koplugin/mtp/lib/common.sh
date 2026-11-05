@@ -313,6 +313,19 @@ teardown() {
         return 1
     fi
 
+    # Drive mode: our g_mass_storage (sharing the image) goes first.
+    if [ "$(state_get DRIVE_LOADED)" = "yes" ]; then
+        if mod_loaded g_mass_storage; then
+            log "unloading the USB drive"
+            if ! rmmod g_mass_storage 2>/dev/null; then
+                log "ERROR: could not unload the USB drive. Reboot the Kindle."
+                return 1
+            fi
+        fi
+        state_set DRIVE_LOADED no
+        sync
+    fi
+
     # Put the stock USB driver back the way we found it.
     if [ "$(state_get GMS_WAS_LOADED)" = "yes" ] && ! mod_loaded g_mass_storage; then
         if ! reload_saved_gms || ! mod_loaded g_mass_storage; then
