@@ -428,11 +428,14 @@ local function texts() local t = {}; for _, w in ipairs(shown) do t[#t+1] = w.te
 local function buttonTexts(w) local t = {}; for _, r in ipairs(w.buttons or {}) do t[#t+1] = r[1].text end; return table.concat(t, " / ") end
 CtlM = P3._controller
 clearShown(); udc("not attached")
-settings.usbmtp_mode = "drive"; settings.usbmtp_drive_mb = 64
+settings.usbmtp_mode = "drive"; Drive.SIZE_MB = 64 -- (256 MB on the Kindle; smaller keeps the tests quick)
 check(menuItem("Start USB file transfer").text_func():find("%(USB drive%)"), "menu says which connection it'll use")
+local preparing = false
+local show0 = UIManager.show
+UIManager.show = function(self, w) if (w.text or ""):find("^Preparing the USB drive") then preparing = true end; return show0(self, w) end
 menuItem("Start USB file transfer").callback()
-check(top().text:find("Preparing the 64 MB USB drive"), "first start prepares the drive, with progress")
-for _ = 1, 40 do if CtlM.active then break end; runTasks() end
+UIManager.show = show0
+check(preparing, "first start prepares the drive (and says so)")
 fakeProcStat = function() end -- (no MTP daemon in drive mode)
 check(Drive.size(IMG) == 64 * 1024 * 1024 and Drive.pending(IMG) == 0, "a 64 MB empty FAT drive")
 check(CtlM.active and CtlM.mode == "drive" and readf(CtlM.lun):find(IMG, 1, true), "then shares it")
@@ -471,13 +474,11 @@ check(#opened == o0 + 1 and opened[#opened].file == "/mnt/us/documents/Dune.epub
 print("== Z2. files left on the drive (KOReader exited before the computer ejected it)")
 clearShown(); udc("not attached")
 menuItem("Start USB file transfer").callback()
-check(CtlM.active and not top().text:find("from last time"), "nothing pending at first")
 udc("configured"); runTasks()
 onDrive("Later.epub", "later")
 local ex0 = exited; Device.exit(Device)
 check(exited == ex0 + 1 and not CtlM.active and Drive.pending(IMG) == 1, "exit stops at once; the book waits on the drive")
 menuItem("Start USB file transfer").callback()
-check(top().text:find("1 file%(s%) from last time are still on it"), "next time, it says so")
 eject(); runTasks()
 check(readf(DOCS .. "/Later.epub") == "later" and Drive.pending(IMG) == 0, "and adds it on eject")
 
@@ -513,7 +514,6 @@ check(not Drive.size(IMG), "erased")
 print("== Z6. one file can't be copied: the rest are, and the drive keeps everything")
 clearShown(); udc("not attached")
 menuItem("Start USB file transfer").callback()
-for _ = 1, 40 do if CtlM.active then break end; runTasks() end
 udc("configured"); runTasks()
 os.execute("mkdir -p " .. DOCS .. "/Blocked.epub") -- a folder where the book should go
 onDrive("Blocked.epub", "b"); onDrive("Fine.epub", "f")
@@ -526,65 +526,62 @@ CtlM:start(); udc("configured"); runTasks(); eject(); runTasks()
 check(readf(DOCS .. "/Blocked.epub") == "b" and top().text:find("1 file%(s%) were already on the Kindle") and Drive.pending(IMG) == 0,
       "next time: the missing one is added, the other recognised as already there, drive emptied")
 
-print("== Z7. not ejected on the computer: nothing imported until it is (or Add anyway)")
+print("== Z7. not ejected on the computer: nothing imported until it is")
 clearShown(); udc("not attached")
 menuItem("Start USB file transfer").callback(); udc("configured"); runTasks()
 writef(DOCS .. "/Keep.epub", "the good copy")
-onDrive("Keep.epub", "HALF"); onDrive("Fresh.epub", "fresh")
+onDrive("Keep.epub", "NEWER"); onDrive("Fresh.epub", "fresh")
 onDrive("Empty.epub", "")
 writef(DOCS .. "/Whole.epub", "whole book"); onDrive("Whole.epub", "")
 local long = string.rep("L", 240) .. ".epub"; onDrive(long, "long")
 assert(sh0("mmd -i " .. IMG .. "@@1M ::documents")); onDrive("documents/Dup.epub", "one"); onDrive("DUP.epub", "two")
 onDrive("Secret.epub", "s"); assert(sh0("mattrib -i " .. IMG .. "@@1M +h ::Secret.epub"))
-local h = io.open(IMG, "r+b"); h:seek("set", 1024 * 1024 + 4 * 512 + 3); h:write("\127"); h:close() -- mounted on a Mac/PC
+local function mountedOnComputer(yes) -- the "clean" bit Windows/macOS clear while it's mounted
+  local h = io.open(IMG, "r+b"); h:seek("set", 1024 * 1024 + 4 * 512 + 3); h:write(yes and "\127" or "\255"); h:close()
+end
+mountedOnComputer(true)
 CtlM:stop()  -- tapped Stop without ejecting
 check(Drive.pending(IMG) == 7 and readf(DOCS .. "/Keep.epub") == "the good copy" and not readf(DOCS .. "/Fresh.epub"), "nothing imported, nothing wiped")
 local w = top()
-check(w.kind == "ButtonDialog" and w.text:find("wasn't ejected") and w.buttons[1][1].text == "Add anyway"
-      and w.buttons[2][1].text == "Start again", "says why; offers Add anyway, and Start again to eject it properly")
-w.buttons[1][1].callback()
+check(w.kind == "ButtonDialog" and w.text:find("wasn't ejected") and w.text:find("still on the drive")
+      and w.buttons[1][1].text == "Start again", "says why, and offers Start again to eject it properly")
+w.buttons[1][1].callback(); udc("configured"); runTasks()
+check(CtlM.active, "started again")
+mountedOnComputer(false); eject(); runTasks()  -- ejected properly this time
 w = top()
-check(readf(DOCS .. "/Fresh.epub") == "fresh" and readf(DOCS .. "/Keep.epub") == "the good copy", "Add anyway: new books in, the existing one NOT replaced")
-check(w.text:find("not replacing the copy on the Kindle") and Drive.pending(IMG) == 7, "the clash is reported, and the drive kept")
+check(readf(DOCS .. "/Fresh.epub") == "fresh" and readf(DOCS .. "/Keep.epub") == "NEWER" and Drive.pending(IMG) == 0, "then everything is added, drive emptied")
 check(readf(DOCS .. "/Whole.epub") == "whole book" and not readf(DOCS .. "/Empty.epub") and w.text:find("2 empty file%(s%) were skipped"),
       "empty files never imported, never replace a book")
 check(readf(DOCS .. "/" .. long) == "long", "a 245-character name imports (short temp names)")
 check(readf(DOCS .. "/Dup.epub") and readf(DOCS .. "/DUP (2).epub") and readf(DOCS .. "/Dup.epub") ~= readf(DOCS .. "/DUP (2).epub"),
       "two files landing on one name (case-insensitively): the second gets (2)")
 check(w.text:find("1 hidden file%(s%) were skipped"), "a hidden file is reported, not silently dropped")
--- Now ejected properly: the leftover clash is a real replacement.
 -- (On the Kindle's vfat "dune2.epub" and "Dune2.epub" are one file; this tmpfs isn't, so the
 -- file is stored under the drive's spelling and the book is open under the other.)
-writef(DOCS .. "/Dune2.epub", "old"); onDrive("Dune2.epub", "new")
-local h2 = io.open(IMG, "r+b"); h2:seek("set", 1024 * 1024 + 4 * 512 + 3); h2:write("\255"); h2:close()
+writef(DOCS .. "/Dune2.epub", "old")
 local homedK = homed
 local rK; rK = { kind = "ReaderUI", document = { file = "/mnt/us/documents/dune2.epub" }, saveSettings = function() end,
   handleEvent = function() end, onHome = function() homed = homed + 1; UIManager:close(rK); ReaderUI.instance = nil end }
 ReaderUI.instance = rK; table.insert(shown, 1, rK)
-CtlM:start(); udc("configured"); runTasks(); eject(); runTasks()
-check(readf(DOCS .. "/Keep.epub") == "HALF" and Drive.pending(IMG) == 0, "ejected: the copy on the drive replaces the book, drive emptied")
-check(homed == homedK + 1, "the open book matched case-insensitively (vfat) and closed before replacing")
+CtlM:start(); udc("configured"); runTasks(); onDrive("Dune2.epub", "new"); eject(); runTasks()
+check(readf(DOCS .. "/Dune2.epub") == "new" and homed == homedK + 1, "the open book matched case-insensitively (vfat) and closed before replacing")
 
-print("== Z5. size change waits for pending files; plug-in prompt offers the other mode")
+print("== Z5. erasing a drive that still has books asks first; the prompt names the mode")
 clearShown(); udc("not attached")
 menuItem("Start USB file transfer").callback()
-for _ = 1, 40 do if CtlM.active then break end; runTasks() end
 onDrive("Pending.epub", "p"); CtlM:stop(nil, true); clearShown()
-local sizes
-for _, it in ipairs(conn.sub_item_table) do if it.text_func and it.text_func():find("^USB drive size") then sizes = it.sub_item_table end end
-sizes[2].callback()  -- 256 MB
-check(top() and top().kind == "ConfirmBox" and top().text:find("1 file%(s%) that weren't added"), "resizing with a book still on the drive asks first")
-check(settings.usbmtp_drive_mb == 64 and Drive.size(IMG), "nothing changed yet")
-UIManager:close(top())
-os.remove(IMG); sizes[2].callback()
-check(settings.usbmtp_drive_mb == 256, "no drive yet: just saved")
-settings.usbmtp_drive_mb = 64
+erase = nil
+for _, it in ipairs(conn.sub_item_table) do if it.text_func and it.text_func():find("^Erase") then erase = it end end
+erase.callback()
+check(top() and top().kind == "ConfirmBox" and top().text:find("1 file%(s%) that weren't added"), "asks first")
+check(Drive.size(IMG), "nothing erased yet")
+top().ok_callback()
+check(not Drive.size(IMG), "erased when confirmed")
 settings.usbmtp_on_plug = "ask"; CtlM.plug_armed = true; CtlM.stopped_at = os.time() - 3600
 udc("configured"); CtlM:onCharging(); runTasks(3)
-check(top().text:find("Start USB file transfer %(USB drive%)%?") and top().other_buttons[1][1].text == "Use MTP this time", "prompt names the mode and offers the other")
-top().other_buttons[1][1].callback(); UIManager:close(top()); runTasks()
-check(CtlM.active and CtlM.mode == "mtp", "MTP this time")
-check(settings.usbmtp_mode == "drive", "without changing the setting")
+check(top().text:find("Start USB file transfer %(USB drive%)%?"), "prompt names the mode")
+top().ok_callback(); UIManager:close(top()); runTasks()
+check(CtlM.active and CtlM.mode == "drive", "and starts it")
 CtlM:stop(); settings.usbmtp_on_plug = nil; settings.usbmtp_mode = nil
 
 print("== os.execute results in both Lua modes (KOReader: 5.1 numbers; some LuaJIT builds: 5.2 triples)")
