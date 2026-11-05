@@ -82,8 +82,11 @@ USB DRIVE (Mac, Windows, any computer, no app)
   shared: the computer can only add books, not see or delete them.
   First start creates it (takes a while). It keeps using that space;
   Connection > Erase the USB drive frees it.
-  Anything that can't be copied stays on the drive and is listed. Eject
-  before unplugging or tapping Stop, or the last book may be cut short.
+  Anything that can't be copied stays on the drive and is listed.
+  Eject before unplugging or tapping Stop: if the computer still has the
+  drive open, nothing is added (the last book may be incomplete); you get
+  Start again (to eject it properly) or Add anyway (never replaces a book
+  already on the Kindle).
   Calibre: use "Connect to folder" on the TO KINDLE drive (or use MTP).
 
 CALIBRE

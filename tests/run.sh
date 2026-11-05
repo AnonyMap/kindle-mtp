@@ -125,7 +125,7 @@ expect_not "  (no 'Safe to unplug')" "$o" "Safe to unplug"
 IMG=/mnt/base-us/koreader/usbmtp-drive.img
 drive_case() { # drive_case "setup snippet" [image]
     fresh_plugin
-    ns "mkdir -p /mnt/base-us/koreader; : > ${IMG}; $1" sh -c "M=${PLUG}/usbmtp.koplugin/mtp
+    ns "mkdir -p /mnt/base-us/koreader; truncate -s 1M ${IMG}; $1" sh -c "M=${PLUG}/usbmtp.koplugin/mtp
         KMTP_DRIVE=${2:-${IMG}} sh \$M/mtp-start.sh; echo \"start exit=\$? lun=[\$(cat ${LUN})] umtprd=\$(pidof fake-umtprd umtprd | wc -w)\"
         sh \$M/mtp-status.sh | grep -E '^(mode|drive)'
         sh \$M/mtp-stop.sh; echo \"stop exit=\$? lun=[\$(cat ${LUN})] gms=\$(grep -c '^g_mass_storage ' /proc/modules) state=\$(test -f /var/tmp/kmtp/state && echo kept || echo gone)\"
@@ -142,6 +142,11 @@ expect "drive mode: refuses an image on the /mnt/us FUSE view (nothing changed)"
 expect_not "  (stock driver untouched)" "$o" "^rmmod <g_mass_storage>"
 o="$(drive_case 'touch $F/fail_drive_insmod')"
 expect "drive mode: driver won't load -> rolled back to stock" "$o" "could not load the USB drive driver" "rolled back; stock USB restored" "start exit=1 lun=\[\]"
+fresh_plugin; o="$(ns "mkdir -p /mnt/base-us/koreader; truncate -s 1M ${IMG}" sh -c "M=${PLUG}/usbmtp.koplugin/mtp
+    KMTP_DRIVE=${IMG} sh \$M/mtp-start.sh >/dev/null; rm -f /var/tmp/kmtp/state
+    sh \$M/mtp-stop.sh; echo \"stop exit=\$? lun=[\$(cat ${LUN})] gms=\$(grep -c '^g_mass_storage ' /proc/modules)\"; tail -n 2 /tmp/kmtp-test/fake/argv")"
+expect "drive mode, state lost: stop still replaces the drive with the stock driver" "$o" "still loaded with no saved state" \
+    "stop exit=0 lun=\[\] gms=1" "^rmmod <g_mass_storage>"
 o="$(drive_case 'touch $F/drive_rmmod_fails')"
 expect "drive mode: can't unload at stop -> error, state kept" "$o" "could not unload the USB drive" "stop exit=1" "state=kept"
 expect_not "  (no 'Safe to unplug')" "$o" "Safe to unplug"

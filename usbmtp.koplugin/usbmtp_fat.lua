@@ -8,14 +8,19 @@ binaries needed on the Kindle.
 
   Fat.format(path [, label])     -> true | nil, err   (MBR + one FAT16 partition, size = file size)
   local vol = Fat.open(path)     -> vol | nil, err    (FAT12/16/32; MBR or no partition table)
-  vol:list()                     -> { {path=, size=, cluster=}, ... } | nil, err
+  vol:list()                     -> { {path=, size=, cluster=}, ... }, skipped | nil, err
+  vol:dirty()                    -> true if the computer still had it mounted (not ejected)
   vol:extract(file, dest)        -> true | nil, err
   vol:close()
 
 Read side is deliberately tolerant of how the computer left the filesystem
 (long names, subfolders, a reformat as FAT32), and strict about anything that
 could be a half-written file: a cluster chain shorter than the file size, or
-running off the volume, is an error rather than a truncated book.
+running off the volume, is an error rather than a truncated book. A volume
+the computer never unmounted (dirty) can hold files whose size is right but
+whose data never arrived; nothing on the read side can tell, so callers check
+dirty() first. The image is untrusted input: every count from the boot sector
+is clamped to what the image file can actually hold.
 ]]
 
 local bit = require("bit")
@@ -163,7 +168,8 @@ function Fat.open(path)
             return nil, "the drive isn't FAT any more (was it reformatted on the computer?)"
         end
     end
-    local v = setmetatable({ f = f, base = base }, Vol)
+    local image_size = f:seek("end") or 0
+    local v = setmetatable({ f = f, base = base, boot = boot }, Vol)
     v.bps = u16(boot, 11)
     v.spc = u8(boot, 13)
     v.csize = v.bps * v.spc
@@ -175,14 +181,35 @@ function Fat.open(path)
     v.root_len = rootsec * v.bps
     v.data_off = v.root_off + v.root_len
     v.clusters = math.floor((totsec - reserved - nfats * fatsz - rootsec) / v.spc)
-    if v.clusters < 1 then f:close(); return nil, "bad filesystem geometry" end
-    v.kind = v.clusters < 4085 and 12 or (v.clusters < 65525 and 16 or 32)
+    -- FAT32 is told apart by its 16-bit FAT size being 0, as Linux does (a small
+    -- FAT32 volume can have a FAT16-sized cluster count).
+    if u16(boot, 22) == 0 then v.kind = 32
+    else v.kind = v.clusters < 4085 and 12 or (v.clusters < 65525 and 16 or 32) end
     if v.kind == 32 then v.root_cluster = u32(boot, 44) end
     local fat_len = fatsz * v.bps
     if fat_len > 32 * 1024 * 1024 then f:close(); return nil, "filesystem too large" end
+    -- Never trust the boot sector's counts beyond what the FAT and the file can hold.
+    local per_entry = v.kind == 12 and 1.5 or (v.kind == 16 and 2 or 4)
+    v.clusters = math.min(v.clusters, math.floor(fat_len / per_entry) - 2,
+                          math.floor((image_size - v.data_off) / v.csize))
+    if v.clusters < 1 then f:close(); return nil, "bad filesystem geometry" end
     v.fat = readAt(f, base + reserved * v.bps, fat_len)
     if not v.fat then f:close(); return nil, "can't read the file allocation table" end
     return v
+end
+
+-- Still marked in use by the computer that had it: Windows and macOS clear the
+-- "clean" bit in FAT entry 1 while mounted, Linux sets bit 0 of the boot
+-- sector's state byte. (FAT12 has neither.)
+function Vol:dirty()
+    if self.kind == 16 then
+        if bit.band(u16(self.fat, 2), 0x8000) == 0 then return true end
+        return bit.band(u8(self.boot, 37), 1) ~= 0
+    elseif self.kind == 32 then
+        if bit.band(u32(self.fat, 4), 0x08000000) == 0 then return true end
+        return bit.band(u8(self.boot, 65), 1) ~= 0
+    end
+    return false
 end
 
 function Vol:close()
@@ -216,11 +243,13 @@ function Vol:nextCluster(c)
     return v
 end
 
-function Vol:chain(first)
+-- Up to `limit` clusters of the chain starting at `first` (nil if it's broken
+-- before that). The limit also bounds a chain that loops back on itself.
+function Vol:chain(first, limit)
     local out = {}
     local c = first
-    while c do
-        if c < 2 or c >= self.clusters + 2 or #out > self.clusters then return nil end
+    while c and #out < limit do
+        if c < 2 or c >= self.clusters + 2 then return nil end
         out[#out + 1] = c
         c = self:nextCluster(c)
         if c == false then return nil end
@@ -238,11 +267,11 @@ function Vol:dirData(cluster)
         if self.kind == 32 then cluster = self.root_cluster
         else return readAt(self.f, self.root_off, self.root_len) end
     end
-    local ch = self:chain(cluster)
+    -- (More than 2 MiB of directory entries is not a real folder.)
+    local ch = self:chain(cluster, math.max(1, math.floor(2 * 1024 * 1024 / self.csize)))
     if not ch then return nil end
     local parts = {}
-    for i, c in ipairs(ch) do
-        if i > 4096 then return nil end -- 4096 clusters of directory entries is not a real folder
+    for _, c in ipairs(ch) do
         local s = readAt(self.f, self:clusterOffset(c), self.csize)
         if not s then return nil end
         parts[#parts + 1] = s
@@ -352,16 +381,23 @@ end
 -- Things computers leave on a drive that aren't the user's files.
 local SKIP_TOP = { ["system volume information"] = true, ["$recycle.bin"] = true, ["recycler"] = true }
 
-local function skipName(name, top)
-    if name:sub(1, 1) == "." then return true end -- .Trashes, .fseventsd, ._AppleDouble, ...
-    if top and SKIP_TOP[name:lower()] then return true end
-    if name:find("[%z\1-\31/\\]") then return true end
-    return false
+local JUNK = { ["thumbs.db"] = true, ["desktop.ini"] = true }
+
+-- "junk": things computers leave behind (silently ignored); "skip": a user file we
+-- won't copy (hidden/system attribute or an unusable name), which gets reported.
+local function classify(e, top)
+    local lname = e.name:lower()
+    if e.name:sub(1, 1) == "." then return "junk" end -- .Trashes, .fseventsd, ._AppleDouble, ...
+    if (top and SKIP_TOP[lname]) or JUNK[lname] then return "junk" end
+    if e.name:find("[%z\1-\31/\\]") then return "skip" end
+    if bit.band(e.attr, 0x06) ~= 0 then return "skip" end -- hidden / system
+    return nil
 end
 
--- Every user file on the drive, depth-first, with "/"-separated paths.
+-- Every user file on the drive, depth-first, with "/"-separated paths, and how
+-- many user files were skipped.
 function Vol:list()
-    local files, count = {}, 0
+    local files, count, skipped = {}, 0, 0
     local function walk(cluster, prefix, depth)
         if depth > 16 then return nil, "folders nested too deep" end
         local ents = self:entries(cluster)
@@ -369,7 +405,9 @@ function Vol:list()
         for _, e in ipairs(ents) do
             count = count + 1
             if count > 20000 then return nil, "too many files" end
-            if not skipName(e.name, depth == 0) and bit.band(e.attr, 0x06) == 0 then -- not hidden/system
+            local class = classify(e, depth == 0)
+            if class == "skip" then skipped = skipped + 1 end
+            if not class then
                 local p = prefix .. e.name
                 if e.dir then
                     if e.cluster < 2 then return nil, "a folder on the drive is damaged" end
@@ -384,7 +422,7 @@ function Vol:list()
     end
     local ok, err = walk(nil, "", 0)
     if not ok then return nil, err end
-    return files
+    return files, skipped
 end
 
 -- Copy one file out to `dest` (written as-is; the caller picks a temp name).
@@ -393,8 +431,9 @@ function Vol:extract(file, dest)
     if not out then return nil, err end
     local function fail(msg) out:close(); os.remove(dest); return nil, msg end
     if file.size > 0 then
-        local ch = self:chain(file.cluster)
-        if not ch or #ch < math.ceil(file.size / self.csize) then
+        local need = math.ceil(file.size / self.csize)
+        local ch = self:chain(file.cluster, need)
+        if not ch or #ch < need then
             return fail("incomplete on the drive (was it ejected before unplugging?)")
         end
         local left = file.size

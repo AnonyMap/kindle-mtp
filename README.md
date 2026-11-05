@@ -122,13 +122,17 @@ Details:
   using its full size on the Kindle; **Erase the USB drive** frees the space.
 - A file that's already on the Kindle with identical contents is skipped. A newer copy of the
   book you have open closes it first.
-- If something can't be copied (no space, a folder with that name in the way, a file cut short
-  by unplugging without ejecting), it stays on the drive and the message says which and why.
-  The drive is only emptied when everything made it.
+- If something can't be copied (no space, a folder with that name in the way, a file cut short),
+  it stays on the drive and the message says which and why. The drive is only emptied when
+  everything made it. Empty files (what an interrupted copy leaves) and hidden files are skipped
+  and counted. Two files that would land on the same name get "(2)".
+- **Not ejected?** If you unplug, tap **Stop** or the Kindle sleeps while the computer still has
+  the drive open, nothing is added: a file can have its full size on the drive with its contents
+  never written. The Kindle tells you and offers **Start again** (so you can eject it properly)
+  or **Add anyway**, which never replaces a book already on the Kindle. It knows from the marks
+  Windows, macOS and Linux leave on a FAT drive while it's in use.
 - If KOReader exits before the drive is ejected, the books wait on it and are added after the
   next session.
-- Unplugging or tapping **Stop** without ejecting also adds the books, but the computer may not
-  have finished writing the last one. Eject first.
 - Calibre doesn't recognise it as a Kindle. Use *Connect/share → Connect to folder* on the
   TO KINDLE drive, or use MTP with Calibre.
 - If the computer offers to reformat the drive, don't. If it was reformatted anyway, the Kindle
@@ -441,7 +445,7 @@ on my own Kindle. I'm sceptical of AI-made software, so here's what that means i
 **How it was checked:**
 - Claims about how the Kindle, Linux kernel, KOReader, uMTP-Responder and Calibre behave were
   checked against their source code, not assumed.
-- Three separate AI reviews went through the code looking for bugs, each given only the code and
+- Four separate AI reviews went through the code looking for bugs, each given only the code and
   a short description, not the development conversation or its conclusions. All the serious
   findings have been fixed:
   - **First review:**
@@ -455,6 +459,12 @@ on my own Kindle. I'm sceptical of AI-made software, so here's what that means i
     Now the driver is never given its saved backing-file setting, and anything left exporting
     makes Stop fail loudly. It also found gaps in telling a real plug-in from charging that
     resumes with the cable still in.
+  - **Fourth review (v0.8, USB drive mode):** a drive the computer hadn't ejected would have been
+    imported anyway, so a half-written copy could replace a good book before the drive was
+    wiped; now such a drive isn't imported without asking, and never over existing books. It
+    also found that a deliberately malformed drive could make the FAT reader run out of memory
+    (its counts are now clamped to the image's real size), that small FAT32 drives were misread
+    as empty, and several smaller import edge cases.
 - The [test suite](#tests) runs the real scripts and plugin code against a simulated Kindle, and
   runs on GitHub for every change. It includes tests that were checked to fail on each of those
   bugs.

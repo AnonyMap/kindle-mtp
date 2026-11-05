@@ -266,7 +266,8 @@ function Ctl:start(mode)
 
     -- Files left from a session that ended without importing (e.g. KOReader exited).
     -- Counted now: once shared, only the computer may touch the image.
-    local pending = mode == "drive" and Drive.pending(Drive.IMAGE) or nil
+    local pending = mode == "drive" and select(2, pcall(Drive.pending, Drive.IMAGE)) or nil
+    if type(pending) ~= "number" then pending = nil end
 
     local busy = showBusy(_("Starting USB file transfer…"))
     -- The scripts' crash watcher stops MTP if this process dies without doing it.
@@ -410,13 +411,17 @@ end
 
 -- The message after a session ends, with buttons to open the books that just
 -- arrived and, if the cable is still in, to start sharing again.
--- opts: restart (offer "Start again"), timeout (only used when there are no buttons)
+-- opts: restart (offer "Start again"), buttons (more {text=, callback=} first),
+-- timeout (only used when there are no buttons)
 function Ctl:showResult(text, books, opts)
     opts = opts or {}
     local rows, dlg = {}, nil
     local function close()
         if dlg then UIManager:close(dlg) end
         dlg = nil
+    end
+    for _i, b in ipairs(opts.buttons or {}) do
+        rows[#rows + 1] = {{ text = b.text, callback = function() close(); b.callback() end }}
     end
     if opts.restart then
         rows[#rows + 1] = {{ text = _("Start again"), callback = function() close(); self:start() end }}
@@ -437,32 +442,55 @@ function Ctl:showResult(text, books, opts)
 end
 
 -- Drive mode, after the computer let go of the image: copy what's on it into
--- documents/, then empty it if everything made it. Returns the books added and
--- a summary for the message.
-function Ctl:importDrive()
-    if not fileExists(Drive.IMAGE) then return {}, nil end
+-- documents/, then empty it if everything made it. Returns the books added, a
+-- summary for the message, and extra buttons for it (Add anyway, for a drive the
+-- computer didn't eject). allow_dirty: the user said Add anyway.
+function Ctl:importDrive(allow_dirty)
+    if not fileExists(Drive.IMAGE) then return {}, nil, nil end
     local busy = showBusy(_("Adding the books from the USB drive…"))
-    local res, err = Drive.import(Drive.IMAGE, {
+    local last = os.time()
+    self:keepAwake(true)
+    local okc, res, err, why = pcall(Drive.import, Drive.IMAGE, {
+        allow_dirty = allow_dirty,
         before_replace = function(us_path)
             -- A newer copy of the open book: close it before it's replaced under KOReader.
+            -- (vfat ignores case, so "dune.epub" open is replaced by "Dune.epub".)
             local r = openReader()
-            if r and r.document.file == us_path then closeReader(r) end
+            if r and r.document.file:lower() == us_path:lower() then closeReader(r) end
+        end,
+        progress = function(i, n)
+            if n > 3 and os.time() - last >= 2 then
+                last = os.time()
+                UIManager:close(busy)
+                busy = showBusy(T(_("Adding the books from the USB drive… %1 of %2"), i, n))
+            end
         end,
     })
+    if not okc then res, err = nil, tostring(res) end -- (a malformed drive mustn't crash KOReader)
     local wiped, werr = false, nil
     if res and #res.failed == 0 then wiped, werr = Drive.wipe(Drive.IMAGE) end
+    self:keepAwake(false)
     UIManager:close(busy)
     if not res then
-        return {}, T(_("Couldn't read the USB drive: %1\nNothing was copied; whatever is on it is still there. (If the computer reformatted it: Menu > USB file transfer > Connection > Erase the USB drive.)"), err)
+        if why == Drive.DIRTY then
+            return {}, _("The USB drive wasn't ejected on the computer, so the last book copied may be incomplete. Nothing was added yet.\n\nStart again and eject it on the computer (Finder: the eject button), or add what's there anyway (books already on the Kindle won't be replaced)."),
+                { { text = _("Add anyway"), callback = function()
+                    local books, summary, extra = self:importDrive(true)
+                    self:showResult(summary or "", books, { buttons = extra })
+                end } }
+        end
+        return {}, T(_("Couldn't read the USB drive: %1\nNothing was copied; whatever is on it is still there. (If the computer reformatted it: Menu > USB file transfer > Connection > Erase the USB drive.)"), err), nil
     end
     local books, others = splitBooks(res.added)
     local lines = {}
-    if #res.added == 0 and res.same == 0 and #res.failed == 0 then
+    if #res.added == 0 and res.same == 0 and #res.failed == 0 and res.empty == 0 and res.skipped == 0 then
         lines[1] = _("The USB drive was empty.")
     end
     local summary = receivedSummary(books, others)
     if summary then lines[#lines + 1] = summary end
     if res.same > 0 then lines[#lines + 1] = T(_("%1 file(s) were already on the Kindle."), res.same) end
+    if res.empty > 0 then lines[#lines + 1] = T(_("%1 empty file(s) were skipped."), res.empty) end
+    if res.skipped > 0 then lines[#lines + 1] = T(_("%1 hidden file(s) were skipped."), res.skipped) end
     if #res.failed > 0 then
         lines[#lines + 1] = T(_("%1 file(s) couldn't be copied and are still on the USB drive:"), #res.failed)
         for i = 1, math.min(#res.failed, 3) do
@@ -471,7 +499,7 @@ function Ctl:importDrive()
     elseif not wiped then
         lines[#lines + 1] = T(_("(The USB drive couldn't be emptied: %1)"), tostring(werr))
     end
-    return books, table.concat(lines, "\n")
+    return books, table.concat(lines, "\n"), nil
 end
 
 -- quiet: no popups (exit / sleep)
@@ -512,12 +540,12 @@ function Ctl:stop(reason, quiet)
         end)
     end
 
-    local text, summary
+    local text, summary, extra
     local books = {}
     if ok then
         if was_drive then
             -- (Only once the stock driver is back: the image is closed by then.)
-            books, summary = self:importDrive()
+            books, summary, extra = self:importDrive()
         else
             local others
             books, others = splitBooks(self:receivedFiles())
@@ -532,7 +560,10 @@ function Ctl:stop(reason, quiet)
                               or _("If USB misbehaves, reboot the Kindle."))
     end
     -- Leave news of new files up until dismissed; a plain "stopped" can time out.
-    self:showResult(text, books, { timeout = (ok and not summary) and 4 or nil })
+    -- (Not ejected: a computer still connected can get it back to eject it properly.)
+    local st = udcState()
+    self:showResult(text, books, { timeout = (ok and not summary) and 4 or nil, buttons = extra,
+                                   restart = extra ~= nil and (st == "configured" or st == "suspended") })
     return ok
 end
 
@@ -806,16 +837,14 @@ function Ctl:onResume()
         self.stopped_by_sleep = false
         local ok = self.sleep_stop_ok
         UIManager:scheduleIn(1, function()
-            local FileManager = package.loaded["apps/filemanager/filemanager"]
-            if FileManager and FileManager.instance then FileManager.instance:onRefresh() end
             local text = _("USB file transfer was stopped because the Kindle went to sleep.\n\nIf a file was being copied at that moment, copy it again.")
-            local books, summary = {}, nil
+            local books, summary, extra = {}, nil, nil
             local st = udcState()
             -- Only a computer that's (still) connected; on a charger it would just wait.
             local cable_in = ok and (st == "configured" or st == "suspended")
             if ok and self.import_pending then
                 self.import_pending = false
-                books, summary = self:importDrive()
+                books, summary, extra = self:importDrive()
                 if summary then text = text .. "\n\n" .. summary end
             elseif ok then
                 local others
@@ -828,7 +857,11 @@ function Ctl:onResume()
                        (not_restored and _("Stock USB was not restored. Reboot the Kindle before using USB.")
                                       or _("If USB misbehaves, reboot the Kindle."))
             end
-            self:showResult(text, books, { restart = cable_in, timeout = (ok and not summary) and 8 or nil })
+            -- (After the import, so the new books show.)
+            local FileManager = package.loaded["apps/filemanager/filemanager"]
+            if FileManager and FileManager.instance then FileManager.instance:onRefresh() end
+            self:showResult(text, books, { restart = cable_in, buttons = extra,
+                                           timeout = (ok and not summary) and 8 or nil })
         end)
     end
 end
@@ -1045,21 +1078,25 @@ end
 -- Connection type, and the USB drive's size / removal.
 function UsbMtp:connectionMenu()
     local function erase(touchmenu_instance)
-        os.remove(Drive.IMAGE)
+        Drive.erase(Drive.IMAGE)
         if touchmenu_instance then touchmenu_instance:updateItems() end
     end
-    -- Run `action` unless the drive holds files that weren't imported yet; then ask.
+    -- Not while a session (ours, or one left by a crash) may still be sharing it.
+    local function idle() return not Ctl.active and not Ctl.preparing and not fileExists(STATE_FILE) end
+    -- Run `action` unless the drive holds files that weren't imported yet, or
+    -- can't be read; then ask.
     local function unlessPending(what, action)
-        local n = fileExists(Drive.IMAGE) and Drive.pending(Drive.IMAGE) or 0
-        if n and n > 0 then
-            UIManager:show(ConfirmBox:new{
-                text = T(_("The USB drive still has %1 file(s) that weren't added to the Kindle (start it and eject it on the computer to add them).\n\n%2 anyway? They will be lost."), n, what),
-                ok_text = what,
-                ok_callback = action,
-            })
-        else
-            action()
+        if not fileExists(Drive.IMAGE) then return action() end
+        local okc, n, err = pcall(Drive.pending, Drive.IMAGE)
+        if not okc then n, err = nil, n end
+        local text
+        if n == nil then
+            text = T(_("The USB drive can't be read (%1).\n\n%2 it anyway? Anything on it will be lost."), tostring(err), what)
+        elseif n > 0 then
+            text = T(_("The USB drive still has %1 file(s) that weren't added to the Kindle (start it and eject it on the computer to add them).\n\n%2 anyway? They will be lost."), n, what)
         end
+        if not text then return action() end
+        UIManager:show(ConfirmBox:new{ text = text, ok_text = what, ok_callback = action })
     end
     local sizes = {}
     for _i, mb in ipairs(DRIVE_SIZES) do -- (not "_": that's gettext, used below)
@@ -1067,14 +1104,14 @@ function UsbMtp:connectionMenu()
             text = mb >= 1024 and T(_("%1 GB"), mb / 1024) or T(_("%1 MB"), mb),
             radio = true,
             checked_func = function() return driveMB() == mb end,
-            enabled_func = function() return not Ctl.active and not Ctl.preparing end,
+            enabled_func = idle,
             callback = function(touchmenu_instance)
                 if driveMB() == mb then return end
                 local function apply()
                     G_reader_settings:saveSetting("usbmtp_drive_mb", mb)
                     erase(touchmenu_instance) -- recreated at the new size on next start
                 end
-                if fileExists(Drive.IMAGE) then unlessPending(_("Resize"), apply) else apply() end
+                unlessPending(_("Resize"), apply)
             end,
         }
     end
@@ -1106,7 +1143,9 @@ function UsbMtp:connectionMenu()
                     return size and T(_("Erase the USB drive (frees %1 MB)"), math.floor(size / Drive.MB))
                                 or _("Erase the USB drive")
                 end,
-                enabled_func = function() return fileExists(Drive.IMAGE) and not Ctl.active and not Ctl.preparing end,
+                enabled_func = function()
+                    return idle() and (fileExists(Drive.IMAGE) or fileExists(Drive.IMAGE .. ".part"))
+                end,
                 callback = function(touchmenu_instance)
                     unlessPending(_("Erase"), function() erase(touchmenu_instance) end)
                 end,

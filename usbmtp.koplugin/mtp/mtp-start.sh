@@ -121,10 +121,12 @@ if [ -n "${DRIVE}" ]; then
     state_set MODE drive
     state_set DRIVE "${DRIVE}"
     log "sharing ${DRIVE} as a USB drive"
+    # Recorded first, so a teardown after any interruption knows a loaded
+    # g_mass_storage is ours (teardown checks it's actually loaded).
+    state_set DRIVE_LOADED yes
     insmod "${MODDIR}/legacy/g_mass_storage.ko" file="${DRIVE}" removable=1 ro=0 stall=0 luns=1 \
         idVendor=0x1d6b idProduct=0x0104 iManufacturer=KOReader 'iProduct="Kindle drive"' \
         iSerialNumber="${SERIAL}" || fail "could not load the USB drive driver"
-    state_set DRIVE_LOADED yes
     LUN=""
     for _f in /sys/class/udc/${UDC_NAME}/device/gadget/lun*/file; do
         [ "$(cat "${_f}" 2>/dev/null)" = "${DRIVE}" ] && { LUN="${_f}"; break; }

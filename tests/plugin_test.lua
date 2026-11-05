@@ -504,7 +504,9 @@ local erase
 for _, it in ipairs(conn.sub_item_table) do if it.text_func and it.text_func():find("^Erase") then erase = it end end
 check(erase and erase.text_func() == "Erase the USB drive (frees 64 MB)" and erase.enabled_func(), "Erase offered, with the space it frees")
 erase.callback()
-check(not Drive.size(IMG), "erased (an unreadable drive has nothing to lose)")
+check(top().kind == "ConfirmBox" and top().text:find("can't be read"), "unreadable drive: asks before erasing")
+top().ok_callback()
+check(not Drive.size(IMG), "erased")
 
 print("== Z6. one file can't be copied: the rest are, and the drive keeps everything")
 clearShown(); udc("not attached")
@@ -521,6 +523,45 @@ os.execute("rmdir " .. DOCS .. "/Blocked.epub")
 CtlM:start(); udc("configured"); runTasks(); eject(); runTasks()
 check(readf(DOCS .. "/Blocked.epub") == "b" and top().text:find("1 file%(s%) were already on the Kindle") and Drive.pending(IMG) == 0,
       "next time: the missing one is added, the other recognised as already there, drive emptied")
+
+print("== Z7. not ejected on the computer: nothing imported until it is (or Add anyway)")
+clearShown(); udc("not attached")
+menuItem("Start USB file transfer").callback(); udc("configured"); runTasks()
+writef(DOCS .. "/Keep.epub", "the good copy")
+onDrive("Keep.epub", "HALF"); onDrive("Fresh.epub", "fresh")
+onDrive("Empty.epub", "")
+writef(DOCS .. "/Whole.epub", "whole book"); onDrive("Whole.epub", "")
+local long = string.rep("L", 240) .. ".epub"; onDrive(long, "long")
+assert(sh0("mmd -i " .. IMG .. "@@1M ::documents")); onDrive("documents/Dup.epub", "one"); onDrive("DUP.epub", "two")
+onDrive("Secret.epub", "s"); assert(sh0("mattrib -i " .. IMG .. "@@1M +h ::Secret.epub"))
+local h = io.open(IMG, "r+b"); h:seek("set", 1024 * 1024 + 4 * 512 + 3); h:write("\127"); h:close() -- mounted on a Mac/PC
+CtlM:stop()  -- tapped Stop without ejecting
+check(Drive.pending(IMG) == 7 and readf(DOCS .. "/Keep.epub") == "the good copy" and not readf(DOCS .. "/Fresh.epub"), "nothing imported, nothing wiped")
+local w = top()
+check(w.kind == "ButtonDialog" and w.text:find("wasn't ejected") and w.buttons[1][1].text == "Add anyway"
+      and w.buttons[2][1].text == "Start again", "says why; offers Add anyway, and Start again to eject it properly")
+w.buttons[1][1].callback()
+w = top()
+check(readf(DOCS .. "/Fresh.epub") == "fresh" and readf(DOCS .. "/Keep.epub") == "the good copy", "Add anyway: new books in, the existing one NOT replaced")
+check(w.text:find("not replacing the copy on the Kindle") and Drive.pending(IMG) == 7, "the clash is reported, and the drive kept")
+check(readf(DOCS .. "/Whole.epub") == "whole book" and not readf(DOCS .. "/Empty.epub") and w.text:find("2 empty file%(s%) were skipped"),
+      "empty files never imported, never replace a book")
+check(readf(DOCS .. "/" .. long) == "long", "a 245-character name imports (short temp names)")
+check(readf(DOCS .. "/Dup.epub") and readf(DOCS .. "/DUP (2).epub") and readf(DOCS .. "/Dup.epub") ~= readf(DOCS .. "/DUP (2).epub"),
+      "two files landing on one name (case-insensitively): the second gets (2)")
+check(w.text:find("1 hidden file%(s%) were skipped"), "a hidden file is reported, not silently dropped")
+-- Now ejected properly: the leftover clash is a real replacement.
+-- (On the Kindle's vfat "dune2.epub" and "Dune2.epub" are one file; this tmpfs isn't, so the
+-- file is stored under the drive's spelling and the book is open under the other.)
+writef(DOCS .. "/Dune2.epub", "old"); onDrive("Dune2.epub", "new")
+local h2 = io.open(IMG, "r+b"); h2:seek("set", 1024 * 1024 + 4 * 512 + 3); h2:write("\255"); h2:close()
+local homedK = homed
+local rK; rK = { kind = "ReaderUI", document = { file = "/mnt/us/documents/dune2.epub" }, saveSettings = function() end,
+  handleEvent = function() end, onHome = function() homed = homed + 1; UIManager:close(rK); ReaderUI.instance = nil end }
+ReaderUI.instance = rK; table.insert(shown, 1, rK)
+CtlM:start(); udc("configured"); runTasks(); eject(); runTasks()
+check(readf(DOCS .. "/Keep.epub") == "HALF" and Drive.pending(IMG) == 0, "ejected: the copy on the drive replaces the book, drive emptied")
+check(homed == homedK + 1, "the open book matched case-insensitively (vfat) and closed before replacing")
 
 print("== Z5. size change waits for pending files; plug-in prompt offers the other mode")
 clearShown(); udc("not attached")

@@ -12,8 +12,12 @@ documents/ and wipe() empties it for next time.
                                returns a fraction, true when done, or nil, err
   Drive.pending(path)       -> number of files waiting on the drive (or nil, err)
   Drive.import(path, opts)  -> result | nil, err
-        result = { added = {us paths}, same = n, failed = { {name=, err=} } }
+        result = { added = {us paths}, same = n, empty = n, skipped = n,
+                   failed = { {name=, err=} }, forced = bool }
+        nil, err, Drive.DIRTY when the computer didn't eject it (opts.allow_dirty
+        imports anyway, but then never replaces a book already on the Kindle)
         opts.before_replace(us_path)  called before an existing file is overwritten
+        opts.progress(i, n, name)     before each file
         opts.free_space(dir)          bytes available (default: util.diskUsage)
   Drive.wipe(path)          -> true | nil, err
 ]]
@@ -122,20 +126,44 @@ local function sameContent(a, b, size)
     return same
 end
 
+-- Why an import didn't happen, for the caller to act on.
+Drive.DIRTY = "dirty"
+
 function Drive.import(path, opts)
     opts = opts or {}
     local vol, err = Fat.open(path)
     if not vol then return nil, err end
-    local list
-    list, err = vol:list()
-    if not list then vol:close(); return nil, err end
+    -- Not ejected: the computer may not have written everything yet (a file can
+    -- have its final size and no data). Only on request, and then never over an
+    -- existing book.
+    local forced = false
+    if vol:dirty() then
+        if not opts.allow_dirty then
+            vol:close()
+            return nil, "the computer still had the drive open (it wasn't ejected)", Drive.DIRTY
+        end
+        forced = true
+    end
+    local list, skipped = vol:list()
+    if not list then vol:close(); return nil, skipped end
 
-    -- People coming from the stock USB mode may well drop a "documents" folder on it.
-    local plan, need = {}, 0
-    for _, file in ipairs(list) do
+    -- People coming from the stock USB mode may well drop a "documents" folder on
+    -- it. That can make two files land on the same name (vfat ignores case), so the
+    -- later one gets " (2)".
+    local plan, taken, need = {}, {}, 0
+    for i, file in ipairs(list) do
         local rel = file.path:gsub("^[Dd][Oo][Cc][Uu][Mm][Ee][Nn][Tt][Ss]/", "")
-        plan[#plan + 1] = { file = file, rel = rel, dest = Drive.BOOKS .. "/" .. rel }
-        need = need + file.size
+        local dest = Drive.BOOKS .. "/" .. rel
+        local n = 1
+        while taken[dest:lower()] do
+            n = n + 1
+            local stem, ext = rel:match("^(.*)(%.[^./]+)$")
+            dest = Drive.BOOKS .. "/" .. (stem and (stem .. " (" .. n .. ")" .. ext) or (rel .. " (" .. n .. ")"))
+        end
+        taken[dest:lower()] = true
+        plan[#plan + 1] = { file = file, dest = dest, index = i }
+        local existing = lfs.attributes(dest)
+        if not (existing and existing.size == file.size) then need = need + file.size end
     end
     local avail = (opts.free_space or defaultFreeSpace)(Drive.BOOKS)
     if avail and need > 0 and avail < need + 8 * Drive.MB then
@@ -144,21 +172,26 @@ function Drive.import(path, opts)
                                   math.ceil(need / Drive.MB), math.floor(avail / Drive.MB))
     end
 
-    local result = { added = {}, same = 0, failed = {} }
-    -- One file: "added", "same" (already there, identical), or nil, err.
+    -- One file: "added", "same" (already there, identical), "empty", or nil, err.
     local function importOne(p)
-        local dir, name = p.dest:match("^(.*)/([^/]+)$")
+        if p.file.size == 0 then return "empty" end -- e.g. what an interrupted copy leaves
+        local dir = p.dest:match("^(.*)/[^/]+$")
         local ok, e = mkdirs(dir)
         if not ok then return nil, e end
         local existing = lfs.attributes(p.dest)
         if existing and existing.mode ~= "file" then return nil, "a folder of that name is in the way" end
-        -- Hidden temp name in the same folder, then rename: never a half-written book.
-        local tmp = dir .. "/.usbmtp-part-" .. name
+        -- Hidden temp name in the same folder (short: long names must still fit), then
+        -- rename: never a half-written book.
+        local tmp = dir .. "/.usbmtp-part-" .. p.index
         ok, e = vol:extract(p.file, tmp)
         if not ok then return nil, e end
         if existing and existing.size == p.file.size and sameContent(tmp, p.dest, p.file.size) then
             os.remove(tmp) -- e.g. imported before, by a run that stopped part-way
             return "same"
+        end
+        if existing and forced then
+            os.remove(tmp)
+            return nil, "not replacing the copy on the Kindle (the drive wasn't ejected)"
         end
         if existing and opts.before_replace then opts.before_replace(Drive.usPath(p.dest)) end
         ok, e = os.rename(tmp, p.dest)
@@ -166,12 +199,16 @@ function Drive.import(path, opts)
         return "added"
     end
 
-    for _, p in ipairs(plan) do
+    local result = { added = {}, same = 0, empty = 0, skipped = skipped or 0, failed = {}, forced = forced }
+    for i, p in ipairs(plan) do
+        if opts.progress then opts.progress(i, #plan, p.file.path) end
         local status, e = importOne(p)
         if status == "added" then
             result.added[#result.added + 1] = Drive.usPath(p.dest)
         elseif status == "same" then
             result.same = result.same + 1
+        elseif status == "empty" then
+            result.empty = result.empty + 1
         else
             result.failed[#result.failed + 1] = { name = p.file.path, err = tostring(e) }
         end
@@ -179,6 +216,12 @@ function Drive.import(path, opts)
     vol:close()
     table.sort(result.added)
     return result
+end
+
+-- Remove the drive (and a half-created one).
+function Drive.erase(path)
+    os.remove(path .. ".part")
+    return os.remove(path)
 end
 
 function Drive.wipe(path)

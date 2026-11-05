@@ -150,6 +150,15 @@ reload_saved_gms() {
     reload_gms "$@"
 }
 
+# Is g_mass_storage our USB drive (sharing an image from KOReader's folder)
+# rather than the stock driver? For when the state file is gone.
+gms_is_our_drive() {
+    for _f in /sys/class/udc/${UDC_NAME}/device/gadget/lun*/file; do
+        case "$(cat "${_f}" 2>/dev/null)" in /mnt/base-us/koreader/*) return 0 ;; esac
+    done
+    return 1
+}
+
 # Is the stock USB drive mode actively exporting storage right now?
 # Direct path first; only walk /sys/devices (slow on this CPU) if that finds no LUNs.
 gms_exporting() {

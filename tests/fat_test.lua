@@ -149,6 +149,50 @@ do -- mtools can't write one, so write "Emoji XY.cbz" and turn X,Y into the UTF-
     vol:close()
 end
 
+print("== review findings")
+do -- A small FAT32 volume (FAT16-sized cluster count) is still FAT32.
+    local img = W .. "/small32.img"
+    must("mkfs.fat -F 32 -s 8 -C '" .. img .. "' 102400")
+    mkfile("b.epub", 3000, 11)
+    must(string.format("mcopy -i '%s' '%s/src/b.epub' ::Book.epub", img, W))
+    local vol = Fat.open(img)
+    local l = vol and vol:list()
+    check(vol and vol.kind == 32 and l and #l == 1 and l[1].path == "Book.epub", "small FAT32 read as FAT32, its files listed")
+    check(vol and not vol:dirty(), "clean as mkfs.fat left it")
+    vol:close()
+    -- Linux's "mounted" flag (boot sector state byte) counts as dirty.
+    local h = io.open(img, "r+b"); h:seek("set", 65); h:write("\1"); h:close()
+    vol = Fat.open(img); check(vol:dirty(), "FAT32 with Linux's in-use flag is dirty"); vol:close()
+    os.remove(img)
+end
+do -- Windows/macOS clear the clean bit in FAT[1] while mounted.
+    local img = W .. "/dirty16.img"
+    must("truncate -s 64M '" .. img .. "'")
+    Fat.format(img)
+    local vol = Fat.open(img); check(not vol:dirty(), "freshly formatted: clean"); vol:close()
+    local h = io.open(img, "r+b"); h:seek("set", 1024 * 1024 + 4 * 512 + 3); h:write("\127"); h:close()
+    vol = Fat.open(img); check(vol:dirty(), "FAT16 with the clean bit cleared is dirty"); vol:close()
+    os.remove(img)
+end
+do -- A crafted FAT32: absurd sector count and a cluster that points to itself.
+    local img = W .. "/loop32.img"
+    must("mkfs.fat -F 32 -s 1 -C '" .. img .. "' 66000")
+    local vol = Fat.open(img)
+    local fat_off, root = vol.base + 32 * 512, vol.root_cluster
+    vol:close()
+    local h = io.open(img, "r+b")
+    h:seek("set", 32); h:write("\255\255\255\255")                -- total sectors: 0xFFFFFFFF
+    h:seek("set", fat_off + 4 * root); h:write(string.char(root % 256, math.floor(root / 256) % 256, 0, 0)) -- root -> root
+    h:close()
+    local t0 = os.clock()
+    vol = Fat.open(img)
+    local ok, l, err = pcall(function() return vol:list() end)
+    check(ok and os.clock() - t0 < 5, "no runaway: clamped to the image, loop bounded (" .. tostring(l and #l or err) .. ")")
+    check(vol.clusters < 132000, "cluster count clamped to what the 66000 KiB image holds (" .. vol.clusters .. "), not the 4e9 claimed")
+    vol:close()
+    os.remove(img)
+end
+
 print("== not FAT")
 local img = W .. "/x.img"
 must("truncate -s 32M '" .. img .. "'")
