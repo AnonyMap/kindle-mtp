@@ -9,6 +9,17 @@ log "=== usbmtp stop ($(date)) ==="
 [ "$(id -u)" = "0" ] || die "must run as root"
 
 if [ ! -f "${KMTP_STATE}" ] && ! daemon_pid >/dev/null && [ ! -d "${GADGET}" ] && ! mod_loaded g_ffs; then
+    if mod_loaded g_mass_storage && gms_is_our_drive; then
+        # Our USB drive is still loaded but its state is gone: unload it and load
+        # the stock driver with defaults.
+        log "warning: the USB drive is still loaded with no saved state; unloading it"
+        if rmmod g_mass_storage 2>/dev/null && reload_gms && mod_loaded g_mass_storage; then
+            log "Stock USB driver loaded. Safe to unplug."
+            exit 0
+        fi
+        log "ERROR: could not replace the USB drive with the stock USB driver. Reboot the Kindle."
+        exit 1
+    fi
     if mod_loaded g_mass_storage || mod_loaded g_ether || [ ! -f "${MODDIR}/legacy/g_mass_storage.ko" ]; then
         # (g_ether: USBNetwork owns the USB port; not ours to replace.)
         log "MTP is not active. Nothing to do."

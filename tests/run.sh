@@ -121,6 +121,35 @@ expect_not "  (no 'Safe to unplug')" "$o" "Safe to unplug"
 o="$(gms_case 'touch $F/gms_exports_on_load $F/gms_eject_fails $F/gms_rmmod_fails')"
 expect "eject and unload both fail: reported, and a retry doesn't claim success" "$o" "could not be stopped" "stop1 exit=1 lun=\[/dev/mmcblk0p4\] gms=1 state=kept" "stop2 exit=1"
 expect_not "  (no 'Safe to unplug')" "$o" "Safe to unplug"
+# USB drive mode: the stock driver shares a disk image instead of running MTP.
+IMG=/mnt/base-us/koreader/usbmtp-drive.img
+drive_case() { # drive_case "setup snippet" [image]
+    fresh_plugin
+    ns "mkdir -p /mnt/base-us/koreader; truncate -s 1M ${IMG}; $1" sh -c "M=${PLUG}/usbmtp.koplugin/mtp
+        KMTP_DRIVE=${2:-${IMG}} sh \$M/mtp-start.sh; echo \"start exit=\$? lun=[\$(cat ${LUN})] umtprd=\$(pidof fake-umtprd umtprd | wc -w)\"
+        sh \$M/mtp-status.sh | grep -E '^(mode|drive)'
+        sh \$M/mtp-stop.sh; echo \"stop exit=\$? lun=[\$(cat ${LUN})] gms=\$(grep -c '^g_mass_storage ' /proc/modules) state=\$(test -f /var/tmp/kmtp/state && echo kept || echo gone)\"
+        cat /tmp/kmtp-test/fake/argv"
+}
+o="$(drive_case :)"
+expect "drive mode: shares the image under its own USB identity, no MTP daemon" "$o" "USB drive is ON" \
+    "start exit=0 lun=\[${IMG}\] umtprd=0" "<file=${IMG}> <removable=1>" "<idVendor=0x1d6b> <idProduct=0x0104>" '<iProduct="Kindle drive">' \
+    "^mode: *drive" "drive shared: *yes"
+expect "drive mode: stop unloads it and restores the stock driver exactly" "$o" "unloading the USB drive" \
+    "MTP is OFF. Safe to unplug." "stop exit=0 lun=\[\] gms=1 state=gone" '<iProduct="Amazon Kindle"> <idProduct=4> <idVendor=6473>'
+o="$(drive_case : /mnt/us/koreader/usbmtp-drive.img)"
+expect "drive mode: refuses an image on the /mnt/us FUSE view (nothing changed)" "$o" "must be under /mnt/base-us" "start exit=1 lun=\[\]"
+expect_not "  (stock driver untouched)" "$o" "^rmmod <g_mass_storage>"
+o="$(drive_case 'touch $F/fail_drive_insmod')"
+expect "drive mode: driver won't load -> rolled back to stock" "$o" "could not load the USB drive driver" "rolled back; stock USB restored" "start exit=1 lun=\[\]"
+fresh_plugin; o="$(ns "mkdir -p /mnt/base-us/koreader; truncate -s 1M ${IMG}" sh -c "M=${PLUG}/usbmtp.koplugin/mtp
+    KMTP_DRIVE=${IMG} sh \$M/mtp-start.sh >/dev/null; rm -f /var/tmp/kmtp/state
+    sh \$M/mtp-stop.sh; echo \"stop exit=\$? lun=[\$(cat ${LUN})] gms=\$(grep -c '^g_mass_storage ' /proc/modules)\"; tail -n 2 /tmp/kmtp-test/fake/argv")"
+expect "drive mode, state lost: stop still replaces the drive with the stock driver" "$o" "still loaded with no saved state" \
+    "stop exit=0 lun=\[\] gms=1" "^rmmod <g_mass_storage>"
+o="$(drive_case 'touch $F/drive_rmmod_fails')"
+expect "drive mode: can't unload at stop -> error, state kept" "$o" "could not unload the USB drive" "stop exit=1" "state=kept"
+expect_not "  (no 'Safe to unplug')" "$o" "Safe to unplug"
 fresh_plugin; o="$(ns 'echo "g_ether 1 0 - Live 0x0" >> $F/proc/modules; sed -i "/^g_mass_storage /d" $F/proc/modules' sh "${PLUG}/usbmtp.koplugin/mtp/mtp-stop.sh")"
 expect "Reset leaves USBNetwork alone" "$o" "MTP is not active. Nothing to do."
 fresh_plugin; o="$(ns : sh "${H}/scenarios/scripts-watcher.sh")"
@@ -166,6 +195,16 @@ if [ -n "${KBASE}" ] && [ -f "${KBASE}/ffi/archiver.lua" ] && command -v zip >/d
     printf '%s\n' "$o" | grep -E "passed, [0-9]+ failed" | sed 's/^/    /'
 else
     echo "SKIP updater scenarios (set KOREADER_BASE to a koreader-base checkout; needs zip, lua-dkjson, lua-filesystem, libarchive13)"
+fi
+
+echo "== FAT (USB drive mode) against mtools / dosfstools"
+if command -v mcopy >/dev/null && command -v mkfs.fat >/dev/null && command -v fsck.fat >/dev/null; then
+    o="$(luajit "${REPO}/tests/fat_test.lua" 2>&1)"
+    printf '%s\n' "$o" | grep -E "^FAIL|mismatch" | sed 's/^/    /'
+    expect "FAT format/read scenarios" "$o" " 0 failed"
+    printf '%s\n' "$o" | grep -E "passed, [0-9]+ failed" | sed 's/^/    /'
+else
+    echo "SKIP FAT scenarios (needs mtools and dosfstools)"
 fi
 
 echo "== hygiene"

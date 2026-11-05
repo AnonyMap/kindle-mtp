@@ -18,7 +18,9 @@ package.preload["ffi/util"] = function() return { purgeDir = function(d) os.exec
 
 local Updater = require("usbmtp_updater")
 
-local function sh(cmd) assert(os.execute(cmd) == 0, cmd) end
+-- os.execute: 0 in Lua 5.1 mode, true/"exit"/0 in a LuaJIT built with 5.2 compat
+local function ran(a, _, c) if type(a) == "number" then return a == 0 end; return a == true and (c == nil or c == 0) end
+local function sh(cmd) assert(ran(os.execute(cmd)), cmd) end
 local function read(p) local f = io.open(p, "rb"); if not f then return nil end local s = f:read("*a"); f:close(); return s end
 local function write(p, s) local f = assert(io.open(p, "wb")); f:write(s); f:close() end
 local function exists(p) return require("lfs").attributes(p) ~= nil end

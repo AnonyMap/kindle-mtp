@@ -150,6 +150,15 @@ reload_saved_gms() {
     reload_gms "$@"
 }
 
+# Is g_mass_storage our USB drive (sharing an image from KOReader's folder)
+# rather than the stock driver? For when the state file is gone.
+gms_is_our_drive() {
+    for _f in /sys/class/udc/${UDC_NAME}/device/gadget/lun*/file; do
+        case "$(cat "${_f}" 2>/dev/null)" in /mnt/base-us/koreader/*) return 0 ;; esac
+    done
+    return 1
+}
+
 # Is the stock USB drive mode actively exporting storage right now?
 # Direct path first; only walk /sys/devices (slow on this CPU) if that finds no LUNs.
 gms_exporting() {
@@ -311,6 +320,19 @@ teardown() {
         log "ERROR: MTP gadget not fully removed, so the stock USB driver was not restored. Reboot the Kindle."
         log "USB controller state: $(udc_state)"
         return 1
+    fi
+
+    # Drive mode: our g_mass_storage (sharing the image) goes first.
+    if [ "$(state_get DRIVE_LOADED)" = "yes" ]; then
+        if mod_loaded g_mass_storage; then
+            log "unloading the USB drive"
+            if ! rmmod g_mass_storage 2>/dev/null; then
+                log "ERROR: could not unload the USB drive. Reboot the Kindle."
+                return 1
+            fi
+        fi
+        state_set DRIVE_LOADED no
+        sync
     fi
 
     # Put the stock USB driver back the way we found it.

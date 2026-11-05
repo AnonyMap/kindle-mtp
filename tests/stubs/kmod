@@ -14,7 +14,11 @@ case "$me" in
       L=/sys/devices/soc0/ci_hdrc.0/gadget/lun0/file
       # Like the real driver: a file= parameter makes it export that file right away.
       for a in "$@"; do
-        case "$a" in file=?*) echo "${a#file=}" >"$L" ;; esac
+        case "$a" in file=?*)
+          [ -e "$F/fail_drive_insmod" ] && { sed -i "/^g_mass_storage /d" "$F/proc/modules"; exit 1; }
+          [ -e "$F/drive_rmmod_fails" ] && touch "$F/fail_rmmod_g_mass_storage"
+          echo "${a#file=}" >"$L" ;;
+        esac
       done
       # Scenario switches: export on load anyway / ejecting fails / and so does rmmod
       [ -e "$F/gms_exports_on_load" ] && echo /dev/mmcblk0p4 >"$L"

@@ -16,6 +16,11 @@ else
     echo "umtprd:        not running"
 fi
 echo "mode:          $(state_get MODE)"
+if [ "$(state_get MODE)" = drive ]; then
+    _lun="$(state_get DRIVE_LUN)"
+    echo "drive image:   $(state_get DRIVE)"
+    echo "drive shared:  $([ -n "$(cat "${_lun}" 2>/dev/null)" ] && echo yes || echo "no (ejected)")"
+fi
 echo "gadget dir:    $([ -d "${GADGET}" ] && echo present || echo absent)"
 echo "gadget UDC:    $(cat "${GADGET}/UDC" 2>/dev/null)"
 echo "FunctionFS:    $(grep -q " ${FFS_MNT} functionfs" /proc/mounts && echo mounted || echo not mounted)"

@@ -25,7 +25,7 @@ local Updater = {
     PLUGIN_DIRNAME = "usbmtp.koplugin",
     -- Everything the plugin needs to load and run. A release missing any of these is refused.
     REQUIRED = {
-        "_meta.lua", "main.lua", "usbmtp_updater.lua",
+        "_meta.lua", "main.lua", "usbmtp_updater.lua", "usbmtp_fat.lua", "usbmtp_drive.lua",
         "mtp/VERSION", "mtp/mtp-start.sh", "mtp/mtp-stop.sh", "mtp/mtp-status.sh",
         "mtp/mtp-watch.sh", "mtp/lib/common.sh", "mtp/conf/umtprd.conf", "mtp/bin/umtprd",
     },
