@@ -120,26 +120,31 @@ for _, mb in ipairs({ 16, 256, 2048 }) do
     os.remove(img)
 end
 
-print("== drives formatted by someone else")
-for _, case in ipairs({
-    { "FAT32, no partition table", "mkfs.fat -F 32 -s 1 -C '%s' 66000", "" },
-    { "FAT16, no partition table", "mkfs.fat -F 16 -C '%s' 32768", "" },
-    { "FAT12, no partition table", "mkfs.fat -F 12 -C '%s' 12000", "" },
-}) do
-    local img = W .. "/other.img"
+local function ourImage(name, mb)
+    local img = W .. "/" .. name
     os.remove(img)
+    must(string.format("truncate -s %dM '%s'", mb or 64, img))
+    assert(Fat.format(img))
+    return img
+end
+
+print("== a drive the computer reformatted is reported, never misread as empty")
+for _, case in ipairs({
+    { "as FAT32 in the same partition", "mkfs.fat -F 32 -s 1 --offset 2048 '%s' >/dev/null" },
+    { "as FAT16 with no partition table", "mkfs.fat -F 16 '%s' >/dev/null" },
+}) do
+    local img = ourImage("re.img")
     must(string.format(case[2], img))
-    mcopyAll(img .. case[3])
-    readBack(img, case[1])
+    local vol, err = Fat.open(img)
+    check(not vol and err:find("reformatted"), case[1] .. " (" .. tostring(err) .. ")")
     os.remove(img)
 end
 
 print("== a name outside Unicode's basic plane (emoji), as macOS/Windows/Linux write it")
 do -- mtools can't write one, so write "Emoji XY.cbz" and turn X,Y into the UTF-16 pair for U+1F4DA
-    local img = W .. "/emoji.img"
-    must("mkfs.fat -F 16 -C '" .. img .. "' 32768")
+    local img = ourImage("emoji.img")
     mkfile("e.cbz", 10, 8)
-    must(string.format("mcopy -i '%s' '%s/src/e.cbz' '::Emoji XY.cbz'", img, W))
+    must(string.format("mcopy -i '%s@@1M' '%s/src/e.cbz' '::Emoji XY.cbz'", img, W))
     local data = read(img)
     local i = data:find("X\0Y\0", 1, true)
     local h = io.open(img, "r+b"); h:seek("set", i - 1); h:write("\61\216\218\220"); h:close()
@@ -147,49 +152,47 @@ do -- mtools can't write one, so write "Emoji XY.cbz" and turn X,Y into the UTF-
     local l = vol and vol:list()
     check(l and l[1] and l[1].path == "Emoji 📚.cbz", "decoded: " .. tostring(l and l[1] and l[1].path))
     vol:close()
+    os.remove(img)
 end
 
-print("== review findings")
-do -- A small FAT32 volume (FAT16-sized cluster count) is still FAT32.
-    local img = W .. "/small32.img"
-    must("mkfs.fat -F 32 -s 8 -C '" .. img .. "' 102400")
-    mkfile("b.epub", 3000, 11)
-    must(string.format("mcopy -i '%s' '%s/src/b.epub' ::Book.epub", img, W))
-    local vol = Fat.open(img)
-    local l = vol and vol:list()
-    check(vol and vol.kind == 32 and l and #l == 1 and l[1].path == "Book.epub", "small FAT32 read as FAT32, its files listed")
-    check(vol and not vol:dirty(), "clean as mkfs.fat left it")
-    vol:close()
-    -- Linux's "mounted" flag (boot sector state byte) counts as dirty.
-    local h = io.open(img, "r+b"); h:seek("set", 65); h:write("\1"); h:close()
-    vol = Fat.open(img); check(vol:dirty(), "FAT32 with Linux's in-use flag is dirty"); vol:close()
-    os.remove(img)
-end
-do -- Windows/macOS clear the clean bit in FAT[1] while mounted.
-    local img = W .. "/dirty16.img"
-    must("truncate -s 64M '" .. img .. "'")
-    Fat.format(img)
+print("== not ejected (dirty)")
+do
+    local img = ourImage("dirty.img")
     local vol = Fat.open(img); check(not vol:dirty(), "freshly formatted: clean"); vol:close()
     local h = io.open(img, "r+b"); h:seek("set", 1024 * 1024 + 4 * 512 + 3); h:write("\127"); h:close()
-    vol = Fat.open(img); check(vol:dirty(), "FAT16 with the clean bit cleared is dirty"); vol:close()
+    vol = Fat.open(img); check(vol:dirty(), "clean bit in FAT[1] cleared (Windows/macOS while mounted): dirty"); vol:close()
+    h = io.open(img, "r+b"); h:seek("set", 1024 * 1024 + 4 * 512 + 3); h:write("\255"); h:seek("set", 1024 * 1024 + 37); h:write("\1"); h:close()
+    vol = Fat.open(img); check(vol:dirty(), "Linux's in-use flag in the boot sector: dirty"); vol:close()
     os.remove(img)
 end
-do -- A crafted FAT32: absurd sector count and a cluster that points to itself.
-    local img = W .. "/loop32.img"
-    must("mkfs.fat -F 32 -s 1 -C '" .. img .. "' 66000")
+
+print("== malformed drives (the image is untrusted input)")
+do
+    local img = ourImage("evil.img")
+    must(string.format("mmd -i '%s@@1M' ::Loop", img))
+    mkfile("x.epub", 70000, 12)
+    must(string.format("mcopy -i '%s@@1M' '%s/src/x.epub' ::Loop/x.epub", img, W))
     local vol = Fat.open(img)
-    local fat_off, root = vol.base + 32 * 512, vol.root_cluster
+    local dir
+    for _, e in ipairs(vol:entries(nil)) do if e.name == "Loop" then dir = e.cluster end end
+    local fat_off = vol.base + 4 * 512
     vol:close()
-    local h = io.open(img, "r+b")
-    h:seek("set", 32); h:write("\255\255\255\255")                -- total sectors: 0xFFFFFFFF
-    h:seek("set", fat_off + 4 * root); h:write(string.char(root % 256, math.floor(root / 256) % 256, 0, 0)) -- root -> root
-    h:close()
+    -- The folder's cluster points back to itself.
+    local h = io.open(img, "r+b"); h:seek("set", fat_off + 2 * dir); h:write(string.char(dir % 256, math.floor(dir / 256))); h:close()
     local t0 = os.clock()
     vol = Fat.open(img)
-    local ok, l, err = pcall(function() return vol:list() end)
-    check(ok and os.clock() - t0 < 5, "no runaway: clamped to the image, loop bounded (" .. tostring(l and #l or err) .. ")")
-    check(vol.clusters < 132000, "cluster count clamped to what the 66000 KiB image holds (" .. vol.clusters .. "), not the 4e9 claimed")
+    local ok = pcall(function() return vol:list() end)
+    check(ok and os.clock() - t0 < 5, "a folder chain that loops ends quickly")
     vol:close()
+    -- Far more sectors than FAT16 can have: refused.
+    h = io.open(img, "r+b"); h:seek("set", 1024 * 1024 + 32); h:write("\0\0\240\0"); h:close() -- 15.7M sectors
+    local v2, err = Fat.open(img)
+    check(not v2 and err:find("reformatted"), "absurd sector count refused")
+    -- A boot sector claiming more than the image file holds: clamped to the file.
+    os.remove(img); img = ourImage("evil.img"); must("truncate -s 8M '" .. img .. "'")
+    vol = Fat.open(img)
+    check(vol and vol.clusters < 8 * 1024, "cluster count clamped to the 8 MB file, not the 64 MB claimed (" .. tostring(vol and vol.clusters) .. ")")
+    if vol then vol:close() end
     os.remove(img)
 end
 
