@@ -7,8 +7,10 @@ with no extra app (a Mac included).
 
 Version:  Tools > USB file transfer > About, or the file mtp/VERSION
 Project:  https://github.com/AnonyMap/usbmtp
-Built for: Kindle 10th gen (2019), firmware 5.16.x, kernel 4.1.15-lab126.
-Confirmed: FW 5.16.8 with Bazzite Linux (KDE), file manager and Calibre.
+Works on: Kindle 10th gen (2019), tested on firmware 5.16.8.
+Should work (same kernel, 4.1.15-lab126; not tested yet): Kindle
+Paperwhite 10th gen (2018), Kindle Oasis 10th gen (2019). Other Kindles
+are refused by a kernel check.
 
 Nothing is permanent: if anything gets stuck, rebooting the Kindle restores
 stock USB.
@@ -29,8 +31,8 @@ while KOReader runs. Read the project README ("How this was made") before
 trusting it.
 
 WHICH PLUGIN? With KOReader closed, does your Kindle show up on a computer
-as a USB drive? Then this is the right plugin (currently Kindle 10th gen
-only; see Built for). If it shows up as an MTP device
+as a USB drive? Then this is the right plugin (if your model is listed
+above). If it shows up as an MTP device
 (newer Kindles: Scribe, Colorsoft, recent Paperwhites), use kindlemtp.koplugin
 (github.com/danihrndzld/kindlemtp.koplugin) instead. Quick check in a
 terminal: if /usr/bin/mtp.sh exists, use kindlemtp.
