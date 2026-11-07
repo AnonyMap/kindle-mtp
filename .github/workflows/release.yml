@@ -34,9 +34,12 @@ jobs:
             echo "Not a plain version tag: $TAG"; exit 1
           fi
 
-      - uses: actions/checkout@v5
+      # (Pinned to v5.1.0's commit. No token left in .git/config: the steps below
+      # run third-party code as root, e.g. the koreader-base checkout in the tests.)
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ env.TAG }}
+          persist-credentials: false
 
       - name: Check tag matches VERSION
         run: |

@@ -16,7 +16,12 @@ package.preload["json"] = function() local dk = require("dkjson"); return { deco
 package.preload["util"] = function() return { makePath = function(d) os.execute("mkdir -p '" .. d .. "'") return true end } end
 package.preload["ffi/util"] = function() return { purgeDir = function(d) os.execute("rm -rf '" .. d .. "'") return true end } end
 
+-- A KOReader whose LuaSec checks hostnames and has a CA bundle (see Updater.tlsParams).
+local fake_ssl = { checkhostname = function() return true end, get_system_ca = function() return "/ca.pem" end }
+package.preload["ssl"] = function() return fake_ssl end
 local Updater = require("usbmtp_updater")
+local real_download = Updater.download
+local DL = "https://github.com/AnonyMap/usbmtp/releases/download/v0/"
 
 -- os.execute: 0 in Lua 5.1 mode, true/"exit"/0 in a LuaJIT built with 5.2 compat
 local function ran(a, _, c) if type(a) == "number" then return a == 0 end; return a == true and (c == nil or c == 0) end
@@ -62,8 +67,8 @@ local function build_zip(version, name, tweak)
     os.remove(W .. "/srv/" .. name) -- zip appends to an existing archive
     sh(string.format("cd %s/build && zip -q -r ../srv/%s . -x '*.log'", W, name))
     sh(string.format("cd %s/srv && sha256sum %s > SHA256SUMS", W, name))
-    served["https://dl/" .. name] = W .. "/srv/" .. name
-    served["https://dl/SHA256SUMS"] = W .. "/srv/SHA256SUMS"
+    served[DL .. name] = W .. "/srv/" .. name
+    served[DL .. "SHA256SUMS"] = W .. "/srv/SHA256SUMS"
 end
 
 local function fresh_install(version)
@@ -85,7 +90,7 @@ check(Updater.compareVersions("0.10", "0.4") == 1 and Updater.compareVersions("v
 print("== update available, installs")
 fresh_install("0.4")
 build_zip("0.5", "usbmtp.koplugin-v0.5.zip")
-release("v0.5", { { "usbmtp.koplugin-v0.5.zip", "https://dl/usbmtp.koplugin-v0.5.zip" }, { "SHA256SUMS", "https://dl/SHA256SUMS" } })
+release("v0.5", { { "usbmtp.koplugin-v0.5.zip", DL .. "usbmtp.koplugin-v0.5.zip" }, { "SHA256SUMS", DL .. "SHA256SUMS" } })
 local info, err = Updater.check("0.4", WORK)
 check(info and info.newer and info.version == "0.5" and info.notes == "Release notes", "finds v0.5 and its notes " .. tostring(err))
 local ok, ierr = Updater.install(info, ROOT, WORK)
@@ -155,7 +160,7 @@ check(not info and err:find("plain version number"), "non-numeric tag: " .. tost
 print("== swap fails halfway: rolls back")
 fresh_install("0.4")
 build_zip("0.5", "usbmtp.koplugin-v0.5.zip")
-release("v0.5", { { "usbmtp.koplugin-v0.5.zip", "https://dl/usbmtp.koplugin-v0.5.zip" }, { "SHA256SUMS", "https://dl/SHA256SUMS" } })
+release("v0.5", { { "usbmtp.koplugin-v0.5.zip", DL .. "usbmtp.koplugin-v0.5.zip" }, { "SHA256SUMS", DL .. "SHA256SUMS" } })
 info = Updater.check("0.4", WORK)
 local real_rename, calls = os.rename, 0
 os.rename = function(a, b)
@@ -182,7 +187,7 @@ os.rename = real_rename
 check(not ok and ierr:find("previous version is now at") and ierr:find("usbmtp.koplugin.old", 1, true), "tells the user the folder to rename back")
 check(exists(ROOT .. ".old/mtp/VERSION"), "previous version still intact at .old")
 
-local GOOD = { { "usbmtp.koplugin-v0.5.zip", "https://dl/usbmtp.koplugin-v0.5.zip" }, { "SHA256SUMS", "https://dl/SHA256SUMS" } }
+local GOOD = { { "usbmtp.koplugin-v0.5.zip", DL .. "usbmtp.koplugin-v0.5.zip" }, { "SHA256SUMS", DL .. "SHA256SUMS" } }
 local function try_broken(label, tweak, expect_pat)
     fresh_install("0.4")
     build_zip("0.5", "usbmtp.koplugin-v0.5.zip", tweak)
@@ -250,12 +255,67 @@ fresh_install("0.3")
 sh(string.format("cd '%s' && DIST_DIR='%s/dist' sh tools/make-release.sh >/dev/null", REPO, W))
 local v = (read(REPO .. "/usbmtp.koplugin/mtp/VERSION") or ""):gsub("%s", "")
 local zname = "usbmtp.koplugin-v" .. v .. ".zip"
-served["https://dl/" .. zname] = W .. "/dist/" .. zname
-served["https://dl/SHA256SUMS"] = W .. "/dist/SHA256SUMS"
-release("v" .. v, { { zname, "https://dl/" .. zname }, { "SHA256SUMS", "https://dl/SHA256SUMS" } })
+served[DL .. zname] = W .. "/dist/" .. zname
+served[DL .. "SHA256SUMS"] = W .. "/dist/SHA256SUMS"
+release("v" .. v, { { zname, DL .. zname }, { "SHA256SUMS", DL .. "SHA256SUMS" } })
 info = Updater.check("0.3", WORK)
 ok, ierr = Updater.install(info, ROOT, WORK)
 check(ok and installed_version() == v, "real release asset installs: " .. tostring(ierr))
+
+print("== TLS: GitHub verified on every hop, or no download at all")
+do
+  package.preload["socketutil"] = function() return {
+    set_timeout = function() end, reset_timeout = function() end, USER_AGENT = "test",
+    file_sink = function(f) return function(chunk) if chunk then f:write(chunk) end return 1 end end } end
+  package.preload["socket"] = function() return { skip = function(n, ...) return select(n + 1, ...) end } end
+  package.preload["socket.url"] = function() return { absolute = function(base, loc)
+    if loc:match("^%a+://") then return loc end
+    return base:match("^(https?://[^/]+)") .. loc end } end
+  local reqs, script = {}, {}
+  Updater.httpRequest = function(req)
+    reqs[#reqs + 1] = req
+    local r = table.remove(script, 1) or { 500 }
+    if r[1] == 200 then req.sink(r.body); req.sink(nil) end
+    return 1, r[1], { location = r.location }, "HTTP " .. r[1]
+  end
+  local out = W .. "/dl.bin"
+  sh("mkdir -p " .. W)
+  script = { { 302, location = "https://objects.githubusercontent.com/x?sig=1" }, { 200, body = "ZIPDATA" } }
+  local ok, err = real_download(DL .. "a.zip", out)
+  local all_verified = #reqs == 2
+  for _, r in ipairs(reqs) do
+    all_verified = all_verified and r.verify == "peer" and r.cafile == "/ca.pem" and r.redirect == false
+  end
+  check(ok and read(out) == "ZIPDATA", "follows GitHub's redirect to its download host (" .. tostring(err) .. ")")
+  check(all_verified, "every request, including after the redirect, asks for certificate verification with the CA bundle")
+  check(reqs[2] and reqs[2].url == "https://objects.githubusercontent.com/x?sig=1", "second request goes to the redirect target")
+  reqs, script = {}, { { 302, location = "http://evil.example/x" } }
+  ok, err = real_download(DL .. "a.zip", out)
+  check(not ok and err:find("non%-HTTPS") and #reqs == 1, "a redirect to plain HTTP is refused")
+  reqs, script = {}, {}
+  for _ = 1, 9 do script[#script + 1] = { 302, location = "/loop" } end
+  ok, err = real_download(DL .. "a.zip", out)
+  check(not ok and err == "too many redirects" and #reqs == 5, "a redirect loop ends")
+  check(not exists(out .. ".part"), "no partial file left")
+
+  fake_ssl.checkhostname = nil -- an older KOReader: LuaSec without hostname checks
+  reqs = {}
+  ok, err = real_download(DL .. "a.zip", out)
+  check(not ok and err:find("can't verify") and #reqs == 0, "KOReader without hostname checks: nothing downloaded")
+  local info
+  info, err = Updater.check("0.4", W .. "/work")
+  check(not info and err:find("Update KOReader, or install the new version by hand"), "and Check for updates says why")
+  fake_ssl.checkhostname = function() return true end
+  fake_ssl.get_system_ca = function() return nil end
+  ok, err = real_download(DL .. "a.zip", out)
+  check(not ok and err:find("certificate bundle") and #reqs == 0, "no CA bundle: nothing downloaded")
+  fake_ssl.get_system_ca = function() return "/ca.pem" end
+end
+
+print("== assets only from this repo's GitHub release downloads")
+release("v0.5", { { "usbmtp.koplugin-v0.5.zip", "https://evil.example/usbmtp.koplugin-v0.5.zip" }, { "SHA256SUMS", DL .. "SHA256SUMS" } })
+local info2, err2 = Updater.check("0.4", W .. "/work")
+check(not info2 and err2:find("missing its plugin zip"), "a zip hosted elsewhere is ignored")
 
 print(string.format("\n%d passed, %d failed", pass, fail))
 os.exit(fail == 0 and 0 or 1)

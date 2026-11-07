@@ -1,4 +1,5 @@
-bin/umtprd was built from uMTP-Responder git commit 85a26f4 (v1.10.1),
+bin/umtprd was built from uMTP-Responder git commit
+85a26f45e1cb41359e634ec3b7fdf4e092d290b9 (v1.10.1),
 https://github.com/viveris/uMTP-Responder - full source in this folder.
 
 Build (Ubuntu 24.04, gcc-arm-linux-gnueabi 13.2):
@@ -11,3 +12,17 @@ Statically linked so it doesn't depend on the Kindle's system libraries.
 Patched with usbmtp-msgqueue-shutdown.patch (apply with: patch -p1 < it)
 before building: fixes a hang on exit when USB init fails (the message-queue
 thread ignored its wake-up and blocked forever in mq_receive).
+
+Also patched with usbmtp-security.patch (applied second; patches apply in
+file-name order):
+  - a connected computer can't create, rename to, or write to .lua files,
+    .sdr folders or hidden (dot) files: KOReader runs Lua it finds in the
+    storage (settings, book metadata sidecars), so those would let a computer
+    run code as root;
+  - DeleteObject refuses the storage root (handle 0), which upstream would
+    empty, and "all objects" (0xFFFFFFFF);
+  - GetPartialObject's size is unsigned, and a negative offset or size never
+    reaches the copy (upstream: heap overflow, daemon crash).
+
+tools/build-umtprd.sh rebuilds it byte for byte. SHA-256 of bin/umtprd:
+  a7993000eb06cf61bf628634654f43ccf0405afbb2b262874c53a550bd4fcbd4

@@ -124,6 +124,12 @@ SAFETY RAILS (automatic)
   - Keeps the Kindle awake while sharing.
   - After a crash, offers to clean up on the next launch.
   Don't edit the "koreader" folder from the computer while sharing.
+  Over MTP the computer can read and change everything on the Kindle,
+  except that it can't create or change .lua files, .sdr folders or
+  hidden files (KOReader runs Lua from those). Install plugins and
+  patches with KOReader closed. Only use "start automatically" with
+  computers you trust; for others, use the USB drive connection, which
+  can't touch what's already on the Kindle.
 
 IF IT DOESN'T WORK
   - Menu > USB file transfer > Status / diagnostics (state, the end
