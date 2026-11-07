@@ -2,8 +2,10 @@
 Self-updater for usbmtp.koplugin, from GitHub Releases.
 
 Only installs a release that:
-  * is the repo's latest (non-draft, non-prerelease) GitHub Release, over HTTPS,
-    with a plain numeric version tag (v0.6, v1.2.3);
+  * is the repo's latest (non-draft, non-prerelease) GitHub Release, fetched over
+    HTTPS with GitHub's certificate and hostname verified (see tlsParams), with a
+    plain numeric version tag (v0.6, v1.2.3), and assets on this repo's GitHub
+    release download URLs;
   * ships "usbmtp.koplugin-v<version>.zip" and "SHA256SUMS" assets;
   * matches its SHA256SUMS entry (catches truncated/corrupt downloads);
   * reads cleanly, contains only regular files and folders under
@@ -36,40 +38,86 @@ local Updater = {
 -- Pluggable I/O (replaced in tests)
 ---------------------------------------------------------------------------
 
---- Download url to path.
+--- TLS settings that make sure we're really talking to GitHub, or nil + why not.
+-- This downloads code that runs as root, so an unverified connection (anyone on
+-- the same Wi-Fi could answer instead of GitHub) is not acceptable. LuaSec's own
+-- default is no verification at all. KOReader patches in certificate and hostname
+-- checks, but older builds don't have them, and the patched default quietly falls
+-- back to none if it finds no CA bundle. So: ask for verification explicitly, and
+-- refuse where the hostname check is missing.
+function Updater.tlsParams()
+    local ok, ssl = pcall(require, "ssl")
+    if not ok or type(ssl) ~= "table" or type(ssl.checkhostname) ~= "function" then
+        return nil, "This version of KOReader can't verify that it's really talking to GitHub, so updating over Wi-Fi isn't safe. Update KOReader, or install the new version by hand from GitHub."
+    end
+    local ca = type(ssl.get_system_ca) == "function" and ssl.get_system_ca() or nil
+    if not ca and require("libs/libkoreader-lfs").attributes("data/ca-bundle.crt", "mode") == "file" then
+        ca = "data/ca-bundle.crt" -- (KOReader's own bundle, relative to its folder)
+    end
+    if not ca then
+        return nil, "KOReader has no certificate bundle, so GitHub can't be verified. Install the new version by hand from GitHub."
+    end
+    return { verify = "peer", cafile = ca }
+end
+
+--- One HTTP request, as socket.http.request(table) (replaced in tests).
+function Updater.httpRequest(req)
+    return require("socket.http").request(req)
+end
+
+local REDIRECT = { [301] = true, [302] = true, [303] = true, [307] = true, [308] = true }
+
+--- Download url to path, over verified HTTPS only.
+-- Redirects (release assets go to GitHub's download host) are followed here
+-- rather than by LuaSocket, which rebuilds the request for the new host without
+-- our TLS settings.
 -- @return true, or nil + error string + HTTP status code (number) if the server answered.
 function Updater.download(url, path, accept, total_timeout)
-    local http = require("socket.http")
+    local tls, terr = Updater.tlsParams()
+    if not tls then return nil, terr end
     local socket = require("socket")
     local socketutil = require("socketutil")
     local tmp = path .. ".part"
-    os.remove(tmp)
-    local f, ferr = io.open(tmp, "wb")
-    if not f then return nil, ferr end
-    socketutil:set_timeout(socketutil.FILE_BLOCK_TIMEOUT or 15,
-                           total_timeout or socketutil.FILE_TOTAL_TIMEOUT or 60)
-    local code, headers, status = socket.skip(1, http.request{
-        url = url,
-        method = "GET",
-        sink = socketutil.file_sink(f),
-        redirect = true, -- release assets redirect to GitHub's download host
-        headers = {
-            ["User-Agent"] = socketutil.USER_AGENT,
-            ["Accept"] = accept or "application/octet-stream",
-        },
-    })
-    socketutil:reset_timeout()
-    pcall(function() f:close() end)
-    local n = tonumber(code)
-    if not headers or n ~= 200 then
+    for _ = 1, 5 do
+        if type(url) ~= "string" or not url:match("^https://") then
+            os.remove(tmp)
+            return nil, "refusing a non-HTTPS address"
+        end
         os.remove(tmp)
-        if n then return nil, status or ("HTTP " .. n), n end
-        return nil, tostring(code or status or "network error")
+        local f, ferr = io.open(tmp, "wb")
+        if not f then return nil, ferr end
+        socketutil:set_timeout(socketutil.FILE_BLOCK_TIMEOUT or 15,
+                               total_timeout or socketutil.FILE_TOTAL_TIMEOUT or 60)
+        local code, headers, status = socket.skip(1, Updater.httpRequest{
+            url = url,
+            method = "GET",
+            sink = socketutil.file_sink(f),
+            redirect = false,
+            verify = tls.verify,
+            cafile = tls.cafile,
+            headers = {
+                ["User-Agent"] = socketutil.USER_AGENT,
+                ["Accept"] = accept or "application/octet-stream",
+            },
+        })
+        socketutil:reset_timeout()
+        pcall(function() f:close() end)
+        local n = tonumber(code)
+        if n and REDIRECT[n] and type(headers) == "table" and type(headers.location) == "string" then
+            url = require("socket.url").absolute(url, headers.location)
+        elseif not headers or n ~= 200 then
+            os.remove(tmp)
+            if n then return nil, status or ("HTTP " .. n), n end
+            return nil, tostring(code or status or "network error")
+        else
+            os.remove(path)
+            local ok, rerr = os.rename(tmp, path)
+            if not ok then return nil, rerr end
+            return true
+        end
     end
-    os.remove(path)
-    local ok, rerr = os.rename(tmp, path)
-    if not ok then return nil, rerr end
-    return true
+    os.remove(tmp)
+    return nil, "too many redirects"
 end
 
 function Updater.decodeJSON(s)
@@ -177,6 +225,8 @@ end
 --- Look up the latest release.
 -- @return info table, or nil + error. info.newer is true if it's newer than current_version.
 function Updater.check(current_version, work_dir)
+    local tls_ok, tls_err = Updater.tlsParams()
+    if not tls_ok then return nil, tls_err end
     makePath(work_dir)
     local json_path = work_dir .. "/latest.json"
     local ok, err, code = Updater.download(
@@ -201,8 +251,11 @@ function Updater.check(current_version, work_dir)
         notes = type(rel.body) == "string" and rel.body or "",
         page = rel.html_url,
     }
+    -- Assets only from this repo's own release downloads.
+    local asset_prefix = "https://github.com/" .. Updater.REPO .. "/releases/download/"
     for _, a in ipairs(type(rel.assets) == "table" and rel.assets or {}) do
-        if type(a) == "table" and type(a.name) == "string" then
+        if type(a) == "table" and type(a.name) == "string" and type(a.browser_download_url) == "string"
+                and a.browser_download_url:sub(1, #asset_prefix) == asset_prefix then
             local v = a.name:match(Updater.ASSET_PATTERN)
             if v then
                 info.zip_name, info.zip_url, info.zip_version = a.name, a.browser_download_url, v

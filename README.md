@@ -177,7 +177,9 @@ sh /mnt/us/koreader/plugins/usbmtp.koplugin/mtp/mtp-stop.sh
 **Tools → USB file transfer → Check for updates** looks for a newer release on this page over
 Wi-Fi. It shows the release notes and asks before installing. Then restart KOReader.
 
-It only runs when you tap it, never on its own. It refuses a download that doesn't match its
+It only runs when you tap it, never on its own. It only talks to GitHub over HTTPS with the
+certificate and hostname checked. On a KOReader too old to check hostnames, it refuses and asks
+you to update KOReader or install by hand. It also refuses a download that doesn't match its
 checksum or is missing files. The previous version is kept until the new one has loaded
 successfully, so a bad update can be undone by renaming `usbmtp.koplugin.old` back.
 
@@ -198,6 +200,38 @@ successfully, so a bad update can be undone by renaming `usbmtp.koplugin.old` ba
 - **USB drive mode** uses 256 MB of the Kindle's storage once it has been set up.
   Tools → USB file transfer → Connection → **Erase the USB drive** frees it.
 - **Don't edit the `koreader` folder from the computer** while connected over MTP.
+
+### Security
+
+**Over MTP, the connected computer can read and change everything on the Kindle's storage.**
+That includes the `koreader` folder, with KOReader's settings and any passwords saved in them.
+A stock Kindle gives any computer the same access in its normal USB mode. The difference is that
+with *When plugged into a computer → start automatically*, this happens while KOReader is
+running. So:
+- Only use **start automatically** with computers you trust. The default does nothing until you
+  tap Start.
+- For a computer you don't trust, use **USB drive**. That computer only sees an empty drive and
+  can't touch anything already on the Kindle.
+
+The plugin also limits what a computer can do over MTP:
+- **No `.lua` files, `.sdr` folders or hidden files.** The computer can't create these, rename
+  anything to them, or change existing ones, because KOReader runs Lua code it finds in those
+  places. So KOReader plugins and patches can't be installed over MTP: exit KOReader and use
+  the Kindle's normal USB mode for those.
+- **No deleting the whole storage at once.** The bundled uMTP-Responder would otherwise delete
+  everything on the Kindle if asked to delete the storage's root.
+
+Those two limits, plus a crash fix, are in our patch to uMTP-Responder (in
+`usbmtp.koplugin/mtp/umtprd-source/`). The shipped binary rebuilds byte for byte from upstream
+source plus our patches with `tools/build-umtprd.sh`, so anyone can check it matches.
+
+Updates only come from this repository's GitHub releases, over verified HTTPS. Anyone with
+access to the repository could publish a release, but nothing installs until you tap **Check for
+updates** and confirm.
+
+To report a security problem privately, use GitHub's
+[private vulnerability reporting](https://github.com/AnonyMap/usbmtp/security/advisories/new)
+rather than a public issue.
 
 ## Troubleshooting
 
@@ -222,7 +256,7 @@ Kindle model, the plugin version (from **About**), and the two log files.
 |---|---|
 | `usbmtp.koplugin/` | The plugin, the only folder that goes on the Kindle |
 | `usbmtp.koplugin/mtp/` | Start, stop, status and watcher scripts; the umtprd binary and its config |
-| `usbmtp.koplugin/mtp/umtprd-source/` | uMTP-Responder source, license (GPLv3) and our one patch |
+| `usbmtp.koplugin/mtp/umtprd-source/` | uMTP-Responder source, license (GPLv3), our patches, and the binary's checksum |
 | `usbmtp.koplugin/usbmtp_drive.lua`, `usbmtp_fat.lua` | USB drive mode |
 | `usbmtp.koplugin/usbmtp_updater.lua` | The self-updater |
 | `tools/` | umtprd build script, release script, Linux diagnostics, Calibre udev rule |
@@ -232,8 +266,9 @@ Kindle model, the plugin version (from **About**), and the two log files.
   Kindle in a private mount namespace. `.github/actions-test-deps.sh` installs what the full
   suite needs (including a koreader-base checkout for the updater tests). GitHub runs it on every
   push and pull request.
-- **The umtprd binary** is a reproducible static ARMv7 build of uMTP-Responder v1.10.1 with one
-  patch (a hang on exit after a failed USB init): `sh tools/build-umtprd.sh`.
+- **The umtprd binary** is a reproducible static ARMv7 build of uMTP-Responder v1.10.1 with our
+  two patches (a hang on exit after a failed USB init; the security limits above):
+  `sh tools/build-umtprd.sh` prints its SHA-256, which must match `umtprd-source/BUILD.txt`.
 - **Releasing:** bump `usbmtp.koplugin/mtp/VERSION` and merge. Then publish a GitHub release with
   the tag `v<VERSION>`. The Release workflow tests, builds and attaches the zip and its checksums.
   If that fails, re-run it from **Actions → Release → Run workflow**.
@@ -241,5 +276,5 @@ Kindle model, the plugin version (from **About**), and the two log files.
 ## License
 
 The plugin and scripts are MIT (see `LICENSE`). The bundled `umtprd` binary is uMTP-Responder by
-Viveris Technologies, licensed GPLv3. Its license, full source and our patch are in
+Viveris Technologies, licensed GPLv3. Its license, full source and our patches are in
 `usbmtp.koplugin/mtp/umtprd-source/`.

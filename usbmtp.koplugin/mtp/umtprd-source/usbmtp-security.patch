@@ -1,0 +1,174 @@
+diff --git a/inc/mtp_sanitize.h b/inc/mtp_sanitize.h
+index 43c4f5f..4f8de2e 100644
+--- a/inc/mtp_sanitize.h
++++ b/inc/mtp_sanitize.h
+@@ -32,5 +32,6 @@
+  */
+  
+ int sanitize_name(char *str, int max_len);
++int usbmtp_protected_name(const char *name);
+ 
+ int check_realpath(char *rootpath, char *pathtocheck);
+diff --git a/src/mtp.c b/src/mtp.c
+index 569b65a..bc752d1 100644
+--- a/src/mtp.c
++++ b/src/mtp.c
+@@ -266,6 +266,13 @@ int parse_incoming_dataset(mtp_ctx * ctx,void * datain,int size,uint32_t * newha
+ 					return ret_code;
+ 				}
+ 
++				if ( usbmtp_protected_name(tmp_str) )
++				{
++					PRINT_ERROR("MTP_OPERATION_SEND_OBJECT_INFO : Protected object name !");
++					ret_code = MTP_RESPONSE_ACCESS_DENIED;
++					return ret_code;
++				}
++
+ 				PRINT_DEBUG("MTP_OPERATION_SEND_OBJECT_INFO : 0x%x objectformat Size %d, Parent 0x%.8x, type: %x, strlen %d str:%s",objectformat,objectsize,parent_handle,type,string_len,tmp_str);
+ 
+ 				entry = get_entry_by_handle_and_storageid(ctx->fs_db, parent_handle,storage_id);
+@@ -361,6 +368,13 @@ int parse_incoming_dataset(mtp_ctx * ctx,void * datain,int size,uint32_t * newha
+ 					return ret_code;
+ 				}
+ 
++				if ( usbmtp_protected_name(tmp_str) )
++				{
++					PRINT_ERROR("MTP_OPERATION_SEND_OBJECT_INFO : Protected object name !");
++					ret_code = MTP_RESPONSE_ACCESS_DENIED;
++					return ret_code;
++				}
++
+ 				PRINT_DEBUG("MTP_OPERATION_SEND_OBJECT_INFO : 0x%x objectformat Size %d, Parent 0x%.8x, type: %x, strlen %d str:%s",objectformat,objectsize,parent_handle,type,string_len,tmp_str);
+ 
+ 				entry = get_entry_by_handle_and_storageid(ctx->fs_db, parent_handle,storage_id);
+@@ -500,6 +514,16 @@ int check_handle_access( mtp_ctx * ctx, fs_entry * entry, uint32_t handle, int w
+ 			return 1;
+ 		}
+ 
++		if( wraccess && usbmtp_protected_name(entry->name) )
++		{
++			PRINT_DEBUG("check_handle_access : %s is protected !",entry->name);
++
++			if( response )
++				*response = MTP_RESPONSE_OBJECT_WRITE_PROTECTED;
++
++			return 1;
++		}
++
+ 		if( (storage_flags & UMTP_STORAGE_READONLY) && wraccess )
+ 		{
+ 			PRINT_DEBUG("check_handle_access : Storage 0x%.8x is Read only !",entry->storage_id);
+diff --git a/src/mtp_operations/mtp_op_deleteobject.c b/src/mtp_operations/mtp_op_deleteobject.c
+index 23672f1..097a6c1 100644
+--- a/src/mtp_operations/mtp_op_deleteobject.c
++++ b/src/mtp_operations/mtp_op_deleteobject.c
+@@ -50,6 +50,14 @@ uint32_t mtp_op_DeleteObject(mtp_ctx * ctx,MTP_PACKET_HEADER * mtp_packet_hdr, i
+ 
+ 	handle = peek(mtp_packet_hdr, sizeof(MTP_PACKET_HEADER), 4); // Get param 1 - object handle
+ 
++	// usbmtp patch: handle 0 is the storage root; deleting it empties the whole
++	// storage. 0xFFFFFFFF means "all objects". Neither is a file a host should delete.
++	if( handle == 0x00000000 || handle == 0xFFFFFFFF )
++	{
++		pthread_mutex_unlock( &ctx->inotify_mutex );
++		return MTP_RESPONSE_OBJECT_WRITE_PROTECTED;
++	}
++
+ 	if( check_handle_access( ctx, NULL, handle, 1, &response_code) )
+ 	{
+ 		pthread_mutex_unlock( &ctx->inotify_mutex );
+diff --git a/src/mtp_operations/mtp_op_getpartialobject.c b/src/mtp_operations/mtp_op_getpartialobject.c
+index b7f8b0f..39a947a 100644
+--- a/src/mtp_operations/mtp_op_getpartialobject.c
++++ b/src/mtp_operations/mtp_op_getpartialobject.c
+@@ -45,7 +45,7 @@ uint32_t mtp_op_GetPartialObject(mtp_ctx * ctx,MTP_PACKET_HEADER * mtp_packet_hd
+ 	fs_entry * entry;
+ 	mtp_size actualsize;
+ 	mtp_offset offset;
+-	int maxsize;
++	uint32_t maxsize; // usbmtp patch: was int, so 0x80000000 and up went negative
+ 
+ 	if(!ctx->fs_db)
+ 		return MTP_RESPONSE_SESSION_NOT_OPEN;
+diff --git a/src/mtp_operations/mtp_ops_helpers.c b/src/mtp_operations/mtp_ops_helpers.c
+index 65e70c7..6fe5009 100644
+--- a/src/mtp_operations/mtp_ops_helpers.c
++++ b/src/mtp_operations/mtp_ops_helpers.c
+@@ -67,6 +67,10 @@ mtp_size send_file_data( mtp_ctx * ctx, fs_entry * entry,mtp_offset offset, mtp_
+ 
+ 	buf_index = -1;
+ 
++	// usbmtp patch: a negative offset or size from the host must never reach the copy below.
++	if( offset < 0 || maxsize < 0 )
++		return 0;
++
+ 	if( offset >= entry->size )
+ 	{
+ 		actualsize = 0;
+diff --git a/src/mtp_properties.c b/src/mtp_properties.c
+index 98d6df3..1066846 100644
+--- a/src/mtp_properties.c
++++ b/src/mtp_properties.c
+@@ -540,6 +540,13 @@ static char * getObjectPropFilename(MTP_PACKET_HEADER * mtp_packet_hdr)
+ 		return NULL;
+ 	}
+ 
++	if ( usbmtp_protected_name(filename) )
++	{
++		PRINT_ERROR("getObjectPropFilename : Protected object name !");
++		free(filename);
++		return NULL;
++	}
++
+ 	return filename;
+ }
+ 
+diff --git a/src/mtp_sanitize.c b/src/mtp_sanitize.c
+index d41571b..590cdf7 100644
+--- a/src/mtp_sanitize.c
++++ b/src/mtp_sanitize.c
+@@ -28,6 +28,7 @@
+ #include <limits.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include <strings.h>
+ 
+ /**
+  * utf8_validate()
+@@ -129,6 +130,36 @@ static int is_forbidden_ascii(unsigned char c)
+  *
+  * @return      SANITIZE_OK on success, negative error code otherwise.
+  */
++/*
++ * usbmtp_protected_name() (usbmtp patch)
++ *
++ * Names a connected computer may not create, rename an object to, or write to.
++ * KOReader runs Lua code it finds in the storage it shares (settings, the
++ * metadata files in each book's .sdr folder), so letting a USB host plant .lua
++ * files or .sdr folders, or rewrite hidden files, would let it run code as
++ * root on the Kindle the next time KOReader reads them.
++ *
++ * @return 1 if protected, 0 otherwise.
++ */
++static int usbmtp_ends_with_ci(const char *s, const char *suffix)
++{
++	size_t ls = strlen(s), lx = strlen(suffix);
++	if (ls < lx)
++		return 0;
++	return strcasecmp(s + ls - lx, suffix) == 0;
++}
++
++int usbmtp_protected_name(const char *name)
++{
++	if (!name)
++		return 0;
++	if (name[0] == '.')
++		return 1;
++	if (usbmtp_ends_with_ci(name, ".lua") || usbmtp_ends_with_ci(name, ".sdr"))
++		return 1;
++	return 0;
++}
++
+ int sanitize_name(char *str, int max_len)
+ {
+ 	if (!str)

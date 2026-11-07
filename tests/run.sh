@@ -197,6 +197,25 @@ else
     echo "SKIP updater scenarios (set KOREADER_BASE to a koreader-base checkout; needs zip, lua-dkjson, lua-filesystem, libarchive13)"
 fi
 
+echo "== umtprd: our patches apply to the bundled source, and the name filter"
+if command -v gcc >/dev/null && command -v patch >/dev/null; then
+    U="$(mktemp -d)"
+    SRC="${REPO}/usbmtp.koplugin/mtp/umtprd-source"
+    o="$( (cd "$U" && tar xzf "$SRC"/uMTP-Responder-*.tar.gz && d="$(ls)" && cd "$d" &&
+          for p in "$SRC"/*.patch; do patch -p1 -s <"$p" || echo "PATCH FAILED: $p"; done &&
+          grep -c "usbmtp patch" src/mtp_operations/mtp_op_deleteobject.c src/mtp_operations/mtp_ops_helpers.c src/mtp_operations/mtp_op_getpartialobject.c &&
+          gcc -Wall -I./inc -o "$U/names" "${REPO}/tests/umtprd_names_test.c" src/mtp_sanitize.c 2>&1 &&
+          "$U/names") 2>&1)"
+    rm -rf "$U"
+    printf '%s\n' "$o" | grep -E "^FAIL|FAILED|error" | sed 's/^/    /'
+    expect "patches apply in build order" "$o" "mtp_op_deleteobject.c:1" "mtp_ops_helpers.c:1" "mtp_op_getpartialobject.c:1"
+    expect_not "  (no patch failed)" "$o" "PATCH FAILED"
+    expect "name filter: .lua files, .sdr folders and hidden names are protected; books aren't" "$o" 'PASS protected."Dune.epub". = 0'
+    expect_not "  (every name case right)" "$o" "^FAIL"
+else
+    echo "SKIP umtprd patch checks (needs gcc and patch)"
+fi
+
 echo "== FAT (USB drive mode) against mtools / dosfstools"
 if command -v mcopy >/dev/null && command -v mkfs.fat >/dev/null && command -v fsck.fat >/dev/null; then
     o="$(luajit "${REPO}/tests/fat_test.lua" 2>&1)"

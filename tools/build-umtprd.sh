@@ -9,7 +9,7 @@
 set -eu
 
 UPSTREAM="https://github.com/viveris/uMTP-Responder.git"
-COMMIT="85a26f4"   # v1.10.1, the version the shipped binary was built from
+COMMIT="85a26f45e1cb41359e634ec3b7fdf4e092d290b9"   # v1.10.1, the version the shipped binary was built from
 CC="${CC:-arm-linux-gnueabi-gcc}"
 # umtprd embeds __DATE__/__TIME__; pin them so builds are byte-for-byte reproducible.
 export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-1793577600}"  # 2026-11-01 00:00 UTC
@@ -31,6 +31,7 @@ for p in "${SRCDIR}"/*.patch; do
     (cd "${WORK}/umtp" && patch -p1 <"${p}")
 done
 
+git -C "${WORK}/umtp" rev-parse HEAD | grep -qx "${COMMIT}" || { echo "upstream checkout isn't ${COMMIT}"; exit 1; }
 make -C "${WORK}/umtp" CC="${CC}" \
     CFLAGS="-I./inc -Wall -O2 -march=armv7-a -mtune=cortex-a9" \
     LDFLAGS="-static -s -lpthread -lrt" -j"$(nproc 2>/dev/null || echo 2)"
@@ -39,3 +40,5 @@ mkdir -p "$(dirname "${OUT}")"
 cp "${WORK}/umtp/umtprd" "${OUT}"
 file "${OUT}" 2>/dev/null || true
 echo "built ${OUT}"
+# Anyone can check the shipped binary is this build: the hash must match the one in git.
+sha256sum "${OUT}" 2>/dev/null || true
